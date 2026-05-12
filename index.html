@@ -1,0 +1,3157 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <title>Espresso Tracker</title>
+
+  <!-- PWA manifest + iOS specifics -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#c75a2c" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Espresso" />
+  <link rel="apple-touch-icon" href="icon-180.png" />
+  <link rel="icon" type="image/png" href="icon-180.png" />
+
+  <!-- React + Babel from CDN -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overscroll-behavior: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body {
+      background: #f5efe3;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    /* Loading state while Babel transpiles */
+    #root:empty::before {
+      content: 'Lädt …';
+      display: block;
+      text-align: center;
+      padding-top: 40vh;
+      color: #6a5a47;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- App code, transpiled in-browser by Babel -->
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, Fragment } = React;
+
+// Standalone PWA version — React via CDN, no imports needed.
+// Hooks are destructured from window.React in the HTML wrapper.
+// const { useState, useEffect, useMemo, useRef } = React;
+
+// =============================================================================
+// CONSTANTS & TARGETS
+// =============================================================================
+
+const ROAST_LEVELS = [
+  { id: 'light', label: 'hell' },
+  { id: 'medium-light', label: 'mittel-hell' },
+  { id: 'medium', label: 'mittel' },
+  { id: 'medium-dark', label: 'mittel-dunkel' },
+  { id: 'dark', label: 'dunkel' },
+];
+
+const PROCESSES = [
+  { id: 'washed', label: 'washed' },
+  { id: 'natural', label: 'natural' },
+  { id: 'honey', label: 'honey' },
+  { id: 'anaerobic', label: 'anaerobic' },
+  { id: 'other', label: 'other' },
+];
+
+const BASKETS = [
+  { id: 'lm-14', label: 'LM 14g', defaultDose: 14 },
+  { id: 'vst-18', label: 'VST 18g', defaultDose: 18 },
+  { id: 'ims-20', label: 'IMS 20g', defaultDose: 20 },
+  { id: 'single', label: 'Single', defaultDose: 9 },
+];
+
+const QUICK_TAGS = [
+  { id: 'sour', label: 'sauer' },
+  { id: 'bitter', label: 'bitter' },
+  { id: 'sour-and-bitter', label: 'sauer + bitter' },
+  { id: 'flat', label: 'flach/dünn' },
+  { id: 'heavy-dull', label: 'schwer/dumpf' },
+  { id: 'ashy-dry', label: 'aschig/trocken' },
+  { id: 'fad-boring', label: 'fad/langweilig' },
+  { id: 'balanced', label: 'balanced/süß' },
+];
+
+// Legacy mapping for tags from older versions — keeps old data displayable and analyzable.
+const LEGACY_TAG_MAP = {
+  'over-extracted': 'bitter',
+  'channeling-suspect': 'sour-and-bitter',
+};
+
+function normalizeQuickTag(tagId) {
+  if (!tagId) return null;
+  return LEGACY_TAG_MAP[tagId] || tagId;
+}
+
+function getQuickTagLabel(tagId) {
+  const normalized = normalizeQuickTag(tagId);
+  if (!normalized) return null;
+  const found = QUICK_TAGS.find(t => t.id === normalized);
+  return found ? found.label : tagId;
+}
+
+// Target ranges — green (target), yellow (acceptable bracket), used for visualization
+// ratio = yieldG / doseG
+// For visualization, full bar range and yellow bracket are wider than green target
+//
+// Dark/medium-dark synthesized from Gemini+ChatGPT discussion (May 2026):
+// - Dark: short-ratio Italian tradition + Micra thermal stability favors 91-92°C (NOT lower)
+// - Medium-dark: distinct from dark, slightly longer/warmer/wider
+// - Niche Zero produces body → dark roasts benefit from ratio 1.7-2.0 (not too short, not too long)
+const TARGETS = {
+  'light':         { ratio: { green: [2.5, 3.0], yellow: [2.2, 3.3], full: [1.5, 4.0] }, time: { green: [30, 40], yellow: [25, 45], full: [15, 55] }, temp: { green: [94, 96], yellow: [92, 97], full: [88, 100] } },
+  'medium-light':  { ratio: { green: [2.5, 3.0], yellow: [2.2, 3.3], full: [1.5, 4.0] }, time: { green: [30, 40], yellow: [25, 45], full: [15, 55] }, temp: { green: [94, 96], yellow: [92, 97], full: [88, 100] } },
+  'medium':        { ratio: { green: [2.0, 2.5], yellow: [1.8, 2.8], full: [1.5, 4.0] }, time: { green: [28, 32], yellow: [24, 36], full: [15, 55] }, temp: { green: [93, 94], yellow: [91, 96], full: [88, 100] } },
+  'medium-dark':   { ratio: { green: [1.9, 2.2], yellow: [1.7, 2.4], full: [1.4, 4.0] }, time: { green: [24, 30], yellow: [20, 34], full: [15, 55] }, temp: { green: [91, 93], yellow: [89, 95], full: [88, 100] } },
+  'dark':          { ratio: { green: [1.7, 2.0], yellow: [1.5, 2.2], full: [1.4, 4.0] }, time: { green: [22, 28], yellow: [19, 32], full: [15, 55] }, temp: { green: [91, 92], yellow: [89, 94], full: [88, 100] } },
+};
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+const uuid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+
+const daysSince = (isoDate) => {
+  if (!isoDate) return null;
+  const ms = Date.now() - new Date(isoDate).getTime();
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
+};
+
+const formatDate = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' });
+};
+
+const formatDateTime = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+};
+
+const zoneOfValue = (value, ranges) => {
+  if (value == null || isNaN(value)) return 'none';
+  if (value >= ranges.green[0] && value <= ranges.green[1]) return 'green';
+  if (value >= ranges.yellow[0] && value <= ranges.yellow[1]) return 'yellow';
+  return 'red';
+};
+
+const distanceFromGreen = (value, ranges) => {
+  if (value == null || isNaN(value)) return 0;
+  if (value < ranges.green[0]) return ranges.green[0] - value;
+  if (value > ranges.green[1]) return value - ranges.green[1];
+  return 0;
+};
+
+// =============================================================================
+// SUGGESTION ENGINE
+// =============================================================================
+
+function suggestNext(brew, bean) {
+  const target = TARGETS[bean.roastLevel];
+  const ratio = brew.doseG > 0 ? brew.yieldG / brew.doseG : null;
+  const beanAge = daysSince(bean.roastDate);
+  const tag = normalizeQuickTag(brew.quickTag); // map legacy tag ids
+
+  let beanAgeNote = null;
+  if (beanAge != null) {
+    if (beanAge < 5) beanAgeNote = `Bohne ${beanAge} Tage alt — entgast evtl. noch, Resultate können erratisch sein.`;
+    else if (beanAge > 30) beanAgeNote = `Bohne ${beanAge} Tage alt — möglicherweise abnehmende Aromatik.`;
+  }
+
+  // Step 1: Mechanical — wins over everything else
+  if (brew.channeling || tag === 'sour-and-bitter') {
+    return {
+      diagnosis: 'Channeling sichtbar oder durch Geschmack signalisiert (sauer und bitter zugleich) — ungleichmäßige Extraktion. Recipe-Tuning hat erst Sinn nach mechanischer Verbesserung; Geschmacks-Diagnose unzuverlässig.',
+      primary: { description: 'Puck-Vorbereitung: leichtes WDT zur Distribution + gleichmäßiger Tamper-Druck. Bei Niche Zero KEIN aggressives WDT (clumpt kaum von sich aus — zu viel WDT erzeugt Mikro-Channels).', kind: 'mechanical', delta: null, target: null },
+      alternatives: [
+        { description: 'Mahlgrad +0.5 (etwas gröber) — falls fein-gemahlen Channeling fördert.', kind: 'grind', delta: 0.5 },
+        { description: 'Sieb prüfen / Dose im sweet spot des Siebs halten.', kind: 'mechanical', delta: null },
+      ],
+      beanAgeNote,
+    };
+  }
+
+  if (brew.gusher) {
+    return {
+      diagnosis: 'Gusher — Wasser läuft zu schnell durch, Schicht zu durchlässig oder ungleichmäßig.',
+      primary: { description: 'Mahlgrad −1.0 (deutlich feiner)', kind: 'grind', delta: -1.0 },
+      alternatives: [
+        { description: 'Dose +0.5g (mehr Widerstand)', kind: 'dose', delta: 0.5 },
+        { description: 'Distribution prüfen', kind: 'mechanical', delta: null },
+      ],
+      beanAgeNote,
+    };
+  }
+
+  if (brew.choke) {
+    return {
+      diagnosis: 'Choke — Wasser kommt kaum durch, zu viel Widerstand im Puck.',
+      primary: { description: 'Mahlgrad +1.0 (deutlich gröber)', kind: 'grind', delta: 1.0 },
+      alternatives: [
+        { description: 'Dose −0.5g (weniger Widerstand)', kind: 'dose', delta: -0.5 },
+        { description: 'Größeres Sieb erwägen', kind: 'mechanical', delta: null },
+      ],
+      beanAgeNote,
+    };
+  }
+
+  // Step 2: Recipe distance from green zone (used for step-size scaling below)
+  const timeDist = distanceFromGreen(brew.timeS, target.time);
+  const ratioDist = ratio != null ? distanceFromGreen(ratio, target.ratio) : 0;
+  const tempDist = distanceFromGreen(brew.tempC, target.temp);
+  const farOff = timeDist > 3 || ratioDist > 0.3 || tempDist > 2;
+
+  // Step 3: Full-rating-driven diagnosis — takes priority over quickTag when set,
+  // because the 7 sliders carry much richer signal than a single tag.
+  if (brew.fullRating) {
+    const fr = brew.fullRating;
+
+    // 3a. Channeling signal: both poles strong (overrides everything else)
+    if (fr.sourDefect >= 3 && fr.bitter >= 3) {
+      return {
+        diagnosis: 'Sauer UND bitter zugleich im Profil — klassisches Channeling-Signal (gleichzeitige Unter- und Überextraktion in verschiedenen Puck-Bereichen).',
+        primary: { description: 'Distribution & Puck: leichtes WDT + gleichmäßiger Tamper-Druck (bei Niche kein aggressives Aufschlagen).', kind: 'mechanical', delta: null },
+        alternatives: [
+          { description: 'Mahlgrad +0.5 zur Probe', kind: 'grind', delta: 0.5 },
+        ],
+        beanAgeNote,
+      };
+    }
+
+    // 3b. Dark sweet spot — distinct from generic balanced, calls it out
+    if (fr.chocolate >= 4 && fr.sweet >= 3 && fr.bitter < 3) {
+      return {
+        diagnosis: 'Schokolade präsent, Süße da, Bitterkeit unter Kontrolle — typischer Sweet Spot für dunkle Röstung. Referenz-Shot.',
+        primary: { description: 'Keine Änderung — als Best-Shot speichern.', kind: 'none', delta: null },
+        alternatives: [],
+        beanAgeNote,
+      };
+    }
+
+    // 3c. Generally balanced
+    if (fr.sweet >= 4 && fr.finish >= 3 && fr.body >= 3) {
+      return {
+        diagnosis: 'Süße ausgeprägt, Abgang trägt, Körper stimmt — balanciert.',
+        primary: { description: 'Keine Änderung — als Best-Shot-Kandidat speichern.', kind: 'none', delta: null },
+        alternatives: [],
+        beanAgeNote,
+      };
+    }
+
+    // 3d. Heavy/dull — body high, finish weak, sweet weak
+    if (fr.body >= 4 && fr.sweet < 3 && fr.finish < 2) {
+      return {
+        diagnosis: 'Hoher Körper aber kein Abgang und wenig Süße — schwer/dumpf, das Aroma ertrinkt im Körper.',
+        primary: { description: 'Ratio +0.2 (mehr Wasser, öffnet das Aroma)', kind: 'ratio', delta: 0.2 },
+        alternatives: [
+          { description: 'Dose −0.5g (lockerer Puck)', kind: 'dose', delta: -0.5 },
+          { description: 'Mahlgrad +0.5 (weniger gelöste Substanz)', kind: 'grind', delta: 0.5 },
+        ],
+        beanAgeNote,
+      };
+    }
+
+    // 3e. Sharp positive acidity without sweetness → underextracted
+    if (fr.acidity >= 4 && fr.sweet < 3 && fr.sourDefect < 3) {
+      return {
+        diagnosis: 'Helle/spritzige Säure präsent aber keine Süße als Gegengewicht — meist unterextrahiert. Echte Säure (Zitrus, Fruchtnoten) ist OK, aber sie braucht Süße um zu tragen.',
+        primary: { description: `Mahlgrad ${farOff ? '−1.0' : '−0.5'} (feiner)`, kind: 'grind', delta: farOff ? -1.0 : -0.5 },
+        alternatives: [
+          { description: 'Temperatur +1°C', kind: 'temp', delta: 1 },
+          { description: 'Ratio +0.1', kind: 'ratio', delta: 0.1 },
+        ],
+        beanAgeNote,
+      };
+    }
+
+    // 3f. Bitter with short/dry finish → overextracted
+    if (fr.bitter >= 3 && fr.finish < 2) {
+      return {
+        diagnosis: 'Bitterkeit mit trockenem/kurzem Abgang — überextrahiert. Bitter dominiert, Süße kann nicht halten.',
+        primary: { description: `Mahlgrad ${farOff ? '+1.0' : '+0.5'} (gröber)`, kind: 'grind', delta: farOff ? 1.0 : 0.5 },
+        alternatives: [
+          { description: 'Temperatur −1°C', kind: 'temp', delta: -1 },
+          { description: 'Ratio −0.2 (früher abbrechen)', kind: 'ratio', delta: -0.2 },
+        ],
+        beanAgeNote,
+      };
+    }
+
+    // 3g. Fad — nothing wrong, nothing right
+    if (fr.sweet < 2 && fr.bitter < 3 && fr.sourDefect < 2 && fr.acidity < 3) {
+      return {
+        diagnosis: 'Nichts schmeckt falsch, aber auch nichts richtig — fad/langweilig. Häufige Ursachen: zu lange Ratio (verdünnt), alte Bohne, oder leichte Unterextraktion ohne Säure-Spitze.',
+        primary: { description: 'Ratio −0.2 (konzentrierter)', kind: 'ratio', delta: -0.2 },
+        alternatives: [
+          { description: 'Mahlgrad −0.5 (mehr Extraktion)', kind: 'grind', delta: -0.5 },
+          { description: 'Bohnen-Alter prüfen — falls >30 Tage post-roast, ggf. andere Bohne testen', kind: 'mechanical', delta: null },
+        ],
+        beanAgeNote,
+      };
+    }
+
+    // Falls through to quickTag switch if no fullRating rule matched
+  }
+
+  // Step 4: Quick-tag based diagnosis
+  switch (tag) {
+    case 'sour':
+      return {
+        diagnosis: 'Unterextrahiert — Wasser hat nicht genug aus der Bohne gelöst. Säure dominiert ohne Süße/Tiefe.',
+        primary: { description: `Mahlgrad ${farOff ? '−1.0' : '−0.5'} (feiner)`, kind: 'grind', delta: farOff ? -1.0 : -0.5 },
+        alternatives: [
+          { description: 'Temperatur +1°C', kind: 'temp', delta: 1 },
+          { description: 'Ratio +0.2 (länger laufen lassen)', kind: 'ratio', delta: 0.2 },
+        ],
+        beanAgeNote,
+      };
+
+    case 'bitter':
+      return {
+        diagnosis: 'Überextrahiert — zu viel aus der Bohne gelöst, harsh / trocken.',
+        primary: { description: `Mahlgrad ${farOff ? '+1.0' : '+0.5'} (gröber)`, kind: 'grind', delta: farOff ? 1.0 : 0.5 },
+        alternatives: [
+          { description: 'Temperatur −1°C', kind: 'temp', delta: -1 },
+          { description: 'Ratio −0.2 (früher abbrechen)', kind: 'ratio', delta: -0.2 },
+        ],
+        beanAgeNote,
+      };
+
+    case 'flat': {
+      const allInTarget = zoneOfValue(brew.timeS, target.time) === 'green' &&
+                          zoneOfValue(ratio, target.ratio) === 'green' &&
+                          zoneOfValue(brew.tempC, target.temp) === 'green';
+      if (allInTarget) {
+        return {
+          diagnosis: 'Recipe im Target, aber Substanz fehlt. Mehrdeutig ohne TDS-Messung — mögliche Ursachen: Bohnenalter, Ratio-Präferenz, oder leichte Unterextraktion. Mit klarer Diagnose hält sich das Tool zurück.',
+          primary: { description: 'Ratio −0.2 (höhere Konzentration)', kind: 'ratio', delta: -0.2 },
+          alternatives: [
+            { description: 'Mahlgrad −0.5', kind: 'grind', delta: -0.5 },
+            { description: 'Dose +0.5g', kind: 'dose', delta: 0.5 },
+          ],
+          beanAgeNote,
+        };
+      }
+      return {
+        diagnosis: 'Flach/dünn — zu wenig Substanz. Recipe noch nicht im Target.',
+        primary: { description: 'Ratio −0.2', kind: 'ratio', delta: -0.2 },
+        alternatives: [
+          { description: `Mahlgrad ${farOff ? '−1.0' : '−0.5'}`, kind: 'grind', delta: farOff ? -1.0 : -0.5 },
+          { description: 'Dose +0.5g', kind: 'dose', delta: 0.5 },
+        ],
+        beanAgeNote,
+      };
+    }
+
+    case 'heavy-dull':
+      return {
+        diagnosis: 'Zu konzentriert — belegt die Zunge, schwer/dicht statt klar. Typisches Phänomen bei dunklen Röstungen mit konischer Mühle (Niche) und kurzer Ratio: viel Körper, wenig Klarheit.',
+        primary: { description: 'Ratio +0.2 (mehr Wasser im Yield, öffnet das Aroma ohne Charakter zu verlieren)', kind: 'ratio', delta: 0.2 },
+        alternatives: [
+          { description: 'Dose −0.5g (etwas lockerer Puck)', kind: 'dose', delta: -0.5 },
+          { description: 'Mahlgrad +0.5 (gröber, weniger gelöste Substanz)', kind: 'grind', delta: 0.5 },
+        ],
+        beanAgeNote,
+      };
+
+    case 'ashy-dry':
+      return {
+        diagnosis: 'Aschige, trockene Bitterkeit — verbrannte Röststoffe werden gelöst. Distinkt von normaler Überextraktion (die eher kratzig/scharf wirkt).',
+        primary: { description: 'Temperatur −1°C (weniger Lösung der hitzeempfindlichen Bitterstoffe)', kind: 'temp', delta: -1 },
+        alternatives: [
+          { description: 'Ratio −0.1 (etwas kürzer abbrechen)', kind: 'ratio', delta: -0.1 },
+          { description: 'Mahlgrad +0.5 leicht gröber', kind: 'grind', delta: 0.5 },
+        ],
+        beanAgeNote,
+      };
+
+    case 'fad-boring':
+      return {
+        diagnosis: 'Fad/langweilig — keine Süße, keine Peaks, kein Charakter. Anders als flach/dünn (Körper-Problem): hier fehlt die Spannung im Aroma.',
+        primary: { description: 'Ratio −0.2 (konzentrierter, weniger Verdünnung)', kind: 'ratio', delta: -0.2 },
+        alternatives: [
+          { description: 'Mahlgrad −0.5 (mehr Extraktion)', kind: 'grind', delta: -0.5 },
+          { description: 'Bohnen-Alter prüfen — bei >30 Tagen ggf. neue Bohne probieren', kind: 'mechanical', delta: null },
+        ],
+        beanAgeNote,
+      };
+
+    case 'balanced':
+      return {
+        diagnosis: 'Im Sweet Spot. Keine Anpassung nötig — als Referenz für diese Bohne speichern.',
+        primary: { description: 'Keine Änderung — Best-Shot-Kandidat.', kind: 'none', delta: null },
+        alternatives: [],
+        beanAgeNote,
+      };
+
+    default:
+      // No tag set — recipe-only
+      return {
+        diagnosis: 'Kein Geschmacks-Tag gesetzt. Diagnose nur recipe-seitig möglich.',
+        primary: { description: 'Geschmacks-Tag setzen für vollständige Diagnose.', kind: 'none', delta: null },
+        alternatives: [],
+        beanAgeNote,
+      };
+  }
+}
+
+// =============================================================================
+// LLM PROMPT BUILDERS
+// =============================================================================
+
+function buildAnalysisContext(brew, bean, beanBrews) {
+  const target = TARGETS[bean.roastLevel];
+  const beanAge = daysSince(bean.roastDate);
+  const currentRatio = brew.doseG > 0 && brew.yieldG > 0 ? (brew.yieldG / brew.doseG).toFixed(2) : '?';
+
+  const lines = [];
+  lines.push(`BOHNE: ${bean.roaster} — ${bean.name}`);
+  if (bean.country) lines.push(`  Herkunft: ${bean.country}`);
+  lines.push(`  Aufbereitung: ${bean.process}, Röstgrad: ${bean.roastLevel}${beanAge != null ? `, ${beanAge} Tage seit Röstung` : ''}`);
+  if (bean.notes) lines.push(`  Bohnen-Notiz: ${bean.notes}`);
+  lines.push('');
+  lines.push(`TARGET (Röstgrad ${bean.roastLevel}): Ratio 1:${target.ratio.green[0]}–1:${target.ratio.green[1]}, Zeit ${target.time.green[0]}–${target.time.green[1]}s, Temp ${target.temp.green[0]}–${target.temp.green[1]}°C`);
+  lines.push('');
+  if (beanBrews.length === 0) {
+    lines.push(`HISTORIE: keine vorherigen Shots dieser Bohne — nur generelle Espresso-Logik anwenden, keine bohnenspezifischen Aussagen.`);
+  } else {
+    lines.push(`HISTORIE (${beanBrews.length} ältere Shots, älteste zuerst):`);
+    beanBrews.forEach((b, i) => {
+      const r = b.doseG > 0 && b.yieldG > 0 ? (b.yieldG / b.doseG).toFixed(2) : '?';
+      const obs = [b.channeling && 'Channeling', b.gusher && 'Gusher', b.choke && 'Choke'].filter(Boolean);
+      const parts = [`${b.doseG}g→${b.yieldG}g (1:${r})`, `${b.timeS}s`, `${b.tempC}°C`, `Mahlgrad ${b.grindNiche}`, `${b.rating}/5★`];
+      if (b.quickTag) parts.push(`Tag:${b.quickTag}`);
+      if (obs.length) parts.push(`Obs:${obs.join('+')}`);
+      if (b.notes) parts.push(`Notiz:"${b.notes}"`);
+      lines.push(`  ${i + 1}. ${parts.join(', ')}`);
+    });
+  }
+  lines.push('');
+  lines.push('AKTUELLER SHOT:');
+  const curObs = [brew.channeling && 'Channeling', brew.gusher && 'Gusher', brew.choke && 'Choke'].filter(Boolean);
+  lines.push(`  ${brew.doseG}g→${brew.yieldG}g (Ratio 1:${currentRatio}), ${brew.timeS}s, ${brew.tempC}°C, Mahlgrad ${brew.grindNiche}, Sieb ${brew.basket}`);
+  lines.push(`  Bewertung: ${brew.rating}/5★${brew.quickTag ? `, Tag: ${brew.quickTag}` : ''}${curObs.length ? `, Beobachtung: ${curObs.join('+')}` : ''}`);
+  if (brew.fullRating) {
+    const fr = brew.fullRating;
+    const frParts = [];
+    if (fr.acidity) frParts.push(`Säure+:${fr.acidity}`);
+    if (fr.sourDefect) frParts.push(`Sauer-Defekt:${fr.sourDefect}`);
+    if (fr.bitter) frParts.push(`Bitter:${fr.bitter}`);
+    if (fr.sweet) frParts.push(`Süße:${fr.sweet}`);
+    if (fr.chocolate) frParts.push(`Schoko:${fr.chocolate}`);
+    if (fr.body) frParts.push(`Body:${fr.body}`);
+    if (fr.finish) frParts.push(`Abgang:${fr.finish}`);
+    if (frParts.length) lines.push(`  Volle Bewertung (0-5): ${frParts.join(', ')}`);
+  }
+  if (brew.notes) lines.push(`  Shot-Notiz: "${brew.notes}"`);
+  return lines.join('\n');
+}
+
+const ANALYSIS_RULES = `REGELN:
+- <5 Shots Historie = nur generelle Espresso-Logik, KEINE "diese Bohne mag X"-Aussagen
+- Mechanik (Channeling/Gusher/Choke) priorisieren — Recipe-Tuning erst danach
+- Hebelhierarchie: Mahlgrad → Ratio → Temp → Dose
+- Schritte: Mahlgrad ±0.5 oder ±1.0, Temp ±1°C, Ratio ±0.1 oder ±0.2, Dose ±0.5g
+- Ohne TDS-Messung: bei Mehrdeutigkeit explizit so kennzeichnen
+- Sprache: Deutsch, knapp`;
+
+function buildArtifactPrompt(brew, bean, beanBrews, userQuestion) {
+  const ctx = buildAnalysisContext(brew, bean, beanBrews);
+  const userQuestionBlock = userQuestion && userQuestion.trim()
+    ? `\n\nZUSATZFRAGE des Nutzers (zuerst beantworten): "${userQuestion.trim()}"`
+    : '';
+  return `Analysiere diesen Espresso-Shot. Gib EINE konkrete Anpassung als Empfehlung.
+
+${ctx}${userQuestionBlock}
+
+${ANALYSIS_RULES}
+
+Antworte als JSON (nur das Objekt, kein Markdown, kein Text drumrum):
+{"diagnosis":"1-2 Sätze","primary":{"description":"z.B. Mahlgrad −0.5","kind":"grind|temp|ratio|dose|mechanical|none","delta":-0.5},"alternatives":[{"description":"...","kind":"...","delta":null}],"reasoning":"max 3 Sätze","confidence":"high|medium|low","uncertainties":["..."]}`;
+}
+
+function buildChatPrompt(brew, bean, beanBrews, userQuestion) {
+  const ctx = buildAnalysisContext(brew, bean, beanBrews);
+  const userQuestionBlock = userQuestion && userQuestion.trim()
+    ? `\n\nZusatzfrage von mir (zuerst beantworten): "${userQuestion.trim()}"`
+    : '';
+  return `Bitte analysiere diesen Espresso-Shot für mich und gib EINE konkrete Anpassungs-Empfehlung.
+
+${ctx}${userQuestionBlock}
+
+${ANALYSIS_RULES}
+
+Antworte in Prosa: 1. Diagnose (1-2 Sätze), 2. Empfehlung (konkrete Änderung), 3. Begründung, 4. Konfidenz (hoch/mittel/niedrig), 5. Unsicherheiten falls vorhanden.`;
+}
+
+// =============================================================================
+// STORAGE
+// =============================================================================
+
+const KEY_BEANS = 'coffee:beans:v1';
+const KEY_BREWS = 'coffee:brews:v1';
+
+function storageAvailable() {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    const test = '__test__';
+    localStorage.setItem(test, test);
+    localStorage.removeItem(test);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function loadAll() {
+  const result = { beans: [], brews: [], diag: { available: storageAvailable(), beansLoaded: 0, brewsLoaded: 0, errors: [] } };
+  if (!result.diag.available) {
+    result.diag.errors.push('localStorage ist nicht verfügbar');
+    console.warn('[Storage] localStorage not available');
+    return result;
+  }
+  try {
+    const v = localStorage.getItem(KEY_BEANS);
+    if (v) {
+      result.beans = JSON.parse(v);
+      result.diag.beansLoaded = result.beans.length;
+    }
+    console.log('[Storage] loaded beans:', result.diag.beansLoaded);
+  } catch (e) {
+    console.warn('[Storage] beans parse failed:', e?.message);
+    result.diag.errors.push(`beans: ${e?.message}`);
+  }
+  try {
+    const v = localStorage.getItem(KEY_BREWS);
+    if (v) {
+      result.brews = JSON.parse(v);
+      result.diag.brewsLoaded = result.brews.length;
+    }
+    console.log('[Storage] loaded brews:', result.diag.brewsLoaded);
+  } catch (e) {
+    console.warn('[Storage] brews parse failed:', e?.message);
+    result.diag.errors.push(`brews: ${e?.message}`);
+  }
+  return result;
+}
+
+async function saveBeans(beans) {
+  if (!storageAvailable()) {
+    return { ok: false, error: 'localStorage nicht verfügbar' };
+  }
+  try {
+    localStorage.setItem(KEY_BEANS, JSON.stringify(beans));
+    console.log('[Storage] saved beans:', beans.length);
+    return { ok: true };
+  } catch (e) {
+    console.error('[Storage] save beans failed:', e);
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+async function saveBrews(brews) {
+  if (!storageAvailable()) {
+    return { ok: false, error: 'localStorage nicht verfügbar' };
+  }
+  try {
+    localStorage.setItem(KEY_BREWS, JSON.stringify(brews));
+    console.log('[Storage] saved brews:', brews.length);
+    return { ok: true };
+  } catch (e) {
+    console.error('[Storage] save brews failed:', e);
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+async function testStorageRoundtrip() {
+  if (!storageAvailable()) {
+    return { ok: false, step: 'availability', error: 'localStorage nicht verfügbar' };
+  }
+  const testKey = 'coffee:storage-test';
+  const testValue = `roundtrip-${Date.now()}`;
+  try {
+    localStorage.setItem(testKey, testValue);
+    const read = localStorage.getItem(testKey);
+    if (read !== testValue) {
+      return { ok: false, step: 'verify', error: `Geschrieben: "${testValue}", gelesen: "${read}"` };
+    }
+    localStorage.removeItem(testKey);
+    return { ok: true, value: testValue };
+  } catch (e) {
+    return { ok: false, step: 'exception', error: e?.message || String(e) };
+  }
+}
+
+// =============================================================================
+// UI ATOMS
+// =============================================================================
+
+function NumericField({ label, unit, value, onChange, step = 1, decimals = 1, min = 0 }) {
+  const display = value === '' || value == null ? '' : Number(value).toFixed(decimals);
+  const adj = (delta) => {
+    const cur = value === '' || value == null ? 0 : Number(value);
+    const next = Math.max(min, +(cur + delta).toFixed(2));
+    onChange(next);
+  };
+  return (
+    <div className="numeric-field">
+      <div className="numeric-label">{label} <span className="unit">{unit}</span></div>
+      <div className="numeric-row">
+        <button className="step-btn" onClick={() => adj(-step)} aria-label="minus">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="4" y="11" width="16" height="2.5" rx="1.25"/>
+          </svg>
+        </button>
+        <input
+          type="number"
+          inputMode="decimal"
+          step={step}
+          value={value === '' || value == null ? '' : value}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === '') { onChange(''); return; }
+            onChange(+v);
+          }}
+          onFocus={(e) => e.target.select()}
+          className="numeric-input"
+        />
+        <button className="step-btn" onClick={() => adj(step)} aria-label="plus">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <rect x="4" y="11" width="16" height="2.5" rx="1.25"/>
+            <rect x="10.75" y="4" width="2.5" height="16" rx="1.25"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReferenceBar({ label, value, ranges, formatValue }) {
+  if (value == null || isNaN(value)) {
+    return (
+      <div className="ref-bar">
+        <div className="ref-bar-header">
+          <span>{label}</span>
+          <span className="ref-bar-val muted">—</span>
+        </div>
+        <div className="ref-bar-track empty"></div>
+      </div>
+    );
+  }
+  const zone = zoneOfValue(value, ranges);
+  const min = ranges.full[0];
+  const max = ranges.full[1];
+  const pctOf = (v) => Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100));
+  const greenStart = pctOf(ranges.green[0]);
+  const greenWidth = pctOf(ranges.green[1]) - greenStart;
+  const yellowLeftStart = pctOf(ranges.yellow[0]);
+  const yellowLeftWidth = greenStart - yellowLeftStart;
+  const yellowRightStart = greenStart + greenWidth;
+  const yellowRightWidth = pctOf(ranges.yellow[1]) - yellowRightStart;
+  const markerPos = pctOf(value);
+
+  return (
+    <div className="ref-bar">
+      <div className="ref-bar-header">
+        <span>{label}</span>
+        <span className={`ref-bar-val zone-${zone}`}>{formatValue(value)}</span>
+      </div>
+      <div className="ref-bar-track">
+        <div className="zone-yellow" style={{ left: `${yellowLeftStart}%`, width: `${yellowLeftWidth}%` }}></div>
+        <div className="zone-green" style={{ left: `${greenStart}%`, width: `${greenWidth}%` }}></div>
+        <div className="zone-yellow" style={{ left: `${yellowRightStart}%`, width: `${yellowRightWidth}%` }}></div>
+        <div className={`marker zone-${zone}`} style={{ left: `${markerPos}%` }}></div>
+      </div>
+      <div className="ref-bar-labels">
+        <span>{formatValue(ranges.green[0])}</span>
+        <span>{formatValue(ranges.green[1])}</span>
+      </div>
+    </div>
+  );
+}
+
+function StarRating({ value, onChange }) {
+  return (
+    <div className="stars">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          className={`star ${value >= n ? 'filled' : ''}`}
+          onClick={() => onChange(value === n ? 0 : n)}
+          aria-label={`${n} stars`}
+        >
+          ★
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Slider({ label, value, onChange }) {
+  return (
+    <div className="slider">
+      <div className="slider-row">
+        <span className="slider-label">{label}</span>
+        <span className="slider-val">{value}</span>
+      </div>
+      <input
+        type="range"
+        min="0"
+        max="5"
+        step="1"
+        value={value || 0}
+        onChange={(e) => onChange(+e.target.value)}
+      />
+    </div>
+  );
+}
+
+function Pill({ label, active, onClick }) {
+  return (
+    <button className={`pill ${active ? 'active' : ''}`} onClick={onClick}>
+      {label}
+    </button>
+  );
+}
+
+function Checkbox({ label, checked, onChange }) {
+  return (
+    <button className={`checkbox-pill ${checked ? 'checked' : ''}`} onClick={() => onChange(!checked)}>
+      <span className="cb-box">{checked ? '✓' : ''}</span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
+// =============================================================================
+// BREW VIEW
+// =============================================================================
+
+const emptyBrew = (selectedBeanId, basket) => ({
+  id: null,
+  beanId: selectedBeanId || null,
+  date: null,
+  basket: basket || 'lm-14',
+  doseG: BASKETS.find(b => b.id === (basket || 'lm-14'))?.defaultDose || 14,
+  yieldG: '',
+  timeS: '',
+  tempC: 93,
+  grindNiche: 12,
+  channeling: false,
+  gusher: false,
+  choke: false,
+  rating: 0,
+  quickTag: null,
+  fullRating: null,
+  notes: '',
+});
+
+function BrewView({ beans, brews, selectedBeanId, setSelectedBeanId, onSave, onShowSuggestion, lastSavedBrew, setLastSavedBrew, brewDraft, setBrewDraft, onAddBean }) {
+  const [showFullRating, setShowFullRating] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  const activeBeans = beans.filter(b => !b.archived);
+  const selectedBean = beans.find(b => b.id === selectedBeanId);
+
+  const target = selectedBean ? TARGETS[selectedBean.roastLevel] : null;
+  const ratio = (brewDraft.doseG > 0 && brewDraft.yieldG !== '' && brewDraft.yieldG > 0)
+    ? brewDraft.yieldG / brewDraft.doseG
+    : null;
+
+  const beanAge = selectedBean ? daysSince(selectedBean.roastDate) : null;
+
+  const update = (patch) => setBrewDraft({ ...brewDraft, ...patch });
+
+  const handleSave = () => {
+    if (!selectedBeanId) { setToast('Bohne wählen'); return; }
+    if (brewDraft.yieldG === '' || brewDraft.timeS === '') { setToast('Yield und Zeit eingeben'); return; }
+    const saveDate = brewDraft.customDate
+      ? new Date(brewDraft.customDate).toISOString()
+      : new Date().toISOString();
+    const saved = {
+      ...brewDraft,
+      id: uuid(),
+      beanId: selectedBeanId,
+      date: saveDate,
+    };
+    // Strip helper field before saving — customDate is form-only
+    delete saved.customDate;
+    onSave(saved);
+    setLastSavedBrew(saved);
+    setToast('Shot gespeichert');
+    setTimeout(() => setToast(null), 2200);
+  };
+
+  const handleSuggest = () => {
+    if (!lastSavedBrew || !selectedBean) return;
+    onShowSuggestion(lastSavedBrew, selectedBean);
+  };
+
+  // Empty state — no beans yet
+  if (activeBeans.length === 0) {
+    return (
+      <div className="empty-state">
+        <h2>Noch keine Bohne</h2>
+        <p>Lege zuerst eine Bohne in der Bibliothek an, um Shots zu loggen.</p>
+        <button className="btn-primary" onClick={onAddBean}>+ Erste Bohne anlegen</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="brew-view">
+      {/* Bean selector */}
+      <div className="card">
+        <label className="field-label">Bohne</label>
+        <select
+          value={selectedBeanId || ''}
+          onChange={(e) => setSelectedBeanId(e.target.value)}
+          className="select"
+        >
+          {activeBeans.map(b => (
+            <option key={b.id} value={b.id}>
+              {b.roaster} — {b.name}
+            </option>
+          ))}
+        </select>
+        {selectedBean && (
+          <div className="bean-meta">
+            <span>{ROAST_LEVELS.find(r => r.id === selectedBean.roastLevel)?.label}</span>
+            {beanAge != null && <span>{beanAge} Tage seit Röstung</span>}
+          </div>
+        )}
+      </div>
+
+      {/* Recipe */}
+      <div className="card">
+        <label className="field-label">Recipe</label>
+        <div className="basket-row">
+          <span className="muted">Sieb:</span>
+          <select
+            value={brewDraft.basket}
+            onChange={(e) => {
+              const newBasket = e.target.value;
+              const def = BASKETS.find(b => b.id === newBasket)?.defaultDose;
+              update({ basket: newBasket, doseG: def ?? brewDraft.doseG });
+            }}
+            className="select-inline"
+          >
+            {BASKETS.map(b => <option key={b.id} value={b.id}>{b.label}</option>)}
+          </select>
+        </div>
+        <div className="numeric-grid">
+          <NumericField label="Dose" unit="g" value={brewDraft.doseG} onChange={(v) => update({ doseG: v })} step={0.1} decimals={1} />
+          <NumericField label="Yield" unit="g" value={brewDraft.yieldG} onChange={(v) => update({ yieldG: v })} step={0.5} decimals={1} />
+          <NumericField label="Zeit" unit="s" value={brewDraft.timeS} onChange={(v) => update({ timeS: v })} step={1} decimals={0} />
+          <NumericField label="Temp" unit="°C" value={brewDraft.tempC} onChange={(v) => update({ tempC: v })} step={0.5} decimals={1} min={80} />
+          <NumericField label="Mahlgrad" unit="" value={brewDraft.grindNiche} onChange={(v) => update({ grindNiche: v })} step={0.5} decimals={1} />
+        </div>
+        {(() => {
+          // Auto-yield suggestion: when dose set + bean known, suggest target-midpoint yield.
+          // Skip if yield is already within green range (no nag).
+          if (!selectedBean || !brewDraft.doseG || brewDraft.doseG <= 0) return null;
+          const target = TARGETS[selectedBean.roastLevel];
+          if (!target) return null;
+          const ratioMid = (target.ratio.green[0] + target.ratio.green[1]) / 2;
+          const suggestedYield = Math.round(brewDraft.doseG * ratioMid * 2) / 2; // round to 0.5
+          const currentYield = parseFloat(brewDraft.yieldG);
+          const inTarget = !isNaN(currentYield) && currentYield > 0
+            && (currentYield / brewDraft.doseG) >= target.ratio.green[0]
+            && (currentYield / brewDraft.doseG) <= target.ratio.green[1];
+          if (inTarget) return null;
+          return (
+            <button
+              className="yield-suggestion"
+              onClick={() => update({ yieldG: suggestedYield })}
+              type="button"
+            >
+              ↦ Target-Mitte: <span className="mono">{suggestedYield}g</span> (1:{ratioMid.toFixed(2)})
+            </button>
+          );
+        })()}
+        {ratio != null && (
+          <div className="ratio-display">
+            Ratio: <span className="mono">1 : {ratio.toFixed(2)}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Visual observations */}
+      <div className="card">
+        <label className="field-label">Beobachtung</label>
+        <div className="checkbox-row">
+          <Checkbox label="Channeling" checked={brewDraft.channeling} onChange={(v) => update({ channeling: v })} />
+          <Checkbox label="Gusher" checked={brewDraft.gusher} onChange={(v) => update({ gusher: v })} />
+          <Checkbox label="Choke" checked={brewDraft.choke} onChange={(v) => update({ choke: v })} />
+        </div>
+      </div>
+
+      {/* Taste */}
+      <div className="card">
+        <label className="field-label">Geschmack</label>
+        <StarRating value={brewDraft.rating} onChange={(v) => update({ rating: v })} />
+        {(() => {
+          // Smart hint: compute most-likely tag from recipe deviation. Doesn't auto-select — just hints.
+          if (!selectedBean || brewDraft.quickTag) return null;
+          const target = TARGETS[selectedBean.roastLevel];
+          if (!target) return null;
+          const time = parseFloat(brewDraft.timeS);
+          const dose = parseFloat(brewDraft.doseG);
+          const yld = parseFloat(brewDraft.yieldG);
+          if (brewDraft.channeling || brewDraft.gusher) {
+            return <div className="tag-hint">Vermutung: <em>sauer + bitter</em> (Channeling-Verdacht, falls Geschmack das bestätigt)</div>;
+          }
+          if (!isNaN(time) && time > 0 && time < target.time.green[0] - 3) {
+            return <div className="tag-hint">Vermutung: <em>sauer</em> (Zeit deutlich unter Target → unterextrahiert)</div>;
+          }
+          if (!isNaN(time) && time > target.time.green[1] + 3) {
+            return <div className="tag-hint">Vermutung: <em>bitter</em> (Zeit deutlich über Target → überextrahiert)</div>;
+          }
+          if (!isNaN(yld) && !isNaN(dose) && dose > 0 && yld > 0) {
+            const r = yld / dose;
+            if (r > target.ratio.green[1] + 0.15) {
+              return <div className="tag-hint">Vermutung: <em>fad/langweilig</em> oder <em>flach/dünn</em> (Ratio über Target → verdünnt)</div>;
+            }
+            if (r < target.ratio.green[0] - 0.1) {
+              return <div className="tag-hint">Vermutung: <em>schwer/dumpf</em> (Ratio unter Target → zu konzentriert)</div>;
+            }
+          }
+          return null;
+        })()}
+        <div className="pill-row pill-row-wrap">
+          {QUICK_TAGS.map(t => (
+            <Pill key={t.id} label={t.label} active={brewDraft.quickTag === t.id} onClick={() => update({ quickTag: brewDraft.quickTag === t.id ? null : t.id })} />
+          ))}
+        </div>
+        <button className="link-btn" onClick={() => setShowFullRating(!showFullRating)}>
+          {showFullRating ? '▾ Volle Bewertung einklappen' : '▸ Volle Bewertung erweitern'}
+        </button>
+        {showFullRating && (
+          <div className="full-rating">
+            {[
+              { key: 'acidity', label: 'Säure (positiv)' },
+              { key: 'sourDefect', label: 'Sauer (Defekt)' },
+              { key: 'bitter', label: 'Bitter' },
+              { key: 'sweet', label: 'Süße' },
+              { key: 'chocolate', label: 'Schokoladigkeit' },
+              { key: 'body', label: 'Body' },
+              { key: 'finish', label: 'Abgang' },
+            ].map(({ key, label }) => (
+              <Slider
+                key={key}
+                label={label}
+                value={(brewDraft.fullRating || {})[key] || 0}
+                onChange={(v) => update({ fullRating: { ...(brewDraft.fullRating || {}), [key]: v } })}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Visualization */}
+      {target && (
+        <div className="card">
+          <label className="field-label">Vergleich zu Target ({ROAST_LEVELS.find(r => r.id === selectedBean.roastLevel)?.label})</label>
+          <ReferenceBar
+            label="Ratio"
+            value={ratio}
+            ranges={target.ratio}
+            formatValue={(v) => `1:${v.toFixed(2)}`}
+          />
+          <ReferenceBar
+            label="Zeit"
+            value={brewDraft.timeS === '' ? null : brewDraft.timeS}
+            ranges={target.time}
+            formatValue={(v) => `${v.toFixed(0)}s`}
+          />
+          <ReferenceBar
+            label="Temperatur"
+            value={brewDraft.tempC === '' ? null : brewDraft.tempC}
+            ranges={target.temp}
+            formatValue={(v) => `${v.toFixed(1)}°C`}
+          />
+        </div>
+      )}
+
+      {/* Notes */}
+      <div className="card">
+        <label className="field-label">Notizen</label>
+        <textarea
+          value={brewDraft.notes}
+          onChange={(e) => update({ notes: e.target.value })}
+          rows={2}
+          placeholder="optional"
+          className="textarea"
+        />
+      </div>
+
+      {/* Nachträglich loggen */}
+      <div className="card">
+        <Checkbox
+          label="Nachträglich loggen (Datum + Uhrzeit setzen)"
+          checked={!!brewDraft.customDate}
+          onChange={(checked) => {
+            if (checked) {
+              // Initialize with current date+time in local format for datetime-local input
+              const now = new Date();
+              const pad = (n) => String(n).padStart(2, '0');
+              const iso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+              update({ customDate: iso });
+            } else {
+              update({ customDate: null });
+            }
+          }}
+        />
+        {brewDraft.customDate && (
+          <input
+            type="datetime-local"
+            className="text-input"
+            style={{ marginTop: 8 }}
+            value={brewDraft.customDate}
+            onChange={(e) => update({ customDate: e.target.value })}
+          />
+        )}
+      </div>
+
+      {toast && <div className="toast">{toast}</div>}
+
+      {/* Sticky save */}
+      <div className="sticky-actions">
+        <button className="btn-primary" onClick={handleSave}>Speichern</button>
+        {lastSavedBrew && lastSavedBrew.beanId === selectedBeanId && (
+          <button className="btn-secondary" onClick={handleSuggest}>Was nächstes?</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// SUGGESTION MODAL
+// =============================================================================
+
+function ChatPromptView({ prompt, onBack }) {
+  const [copied, setCopied] = useState(false);
+  const textareaRef = useRef(null);
+
+  const handleCopy = async () => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(prompt);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2200);
+        return;
+      }
+    } catch {}
+    if (textareaRef.current) textareaRef.current.select();
+  };
+
+  return (
+    <>
+      <div className="llm-section-hint">
+        Workaround falls In-Artefakt-KI nicht funktioniert: kopiere den Prompt unten, füge ihn in den Claude-Chat ein (wo du das Artefakt erstellt hast). Claude antwortet dort mit der Analyse. Anpassung dann manuell hier eintragen.
+      </div>
+      <textarea
+        ref={textareaRef}
+        className="textarea mono"
+        value={prompt}
+        readOnly
+        rows={10}
+        onFocus={(e) => e.target.select()}
+        style={{ fontSize: 12, marginBottom: 10 }}
+      />
+      <button className="btn-primary" onClick={handleCopy} style={{ width: '100%' }}>
+        {copied ? '✓ Kopiert' : 'In Zwischenablage kopieren'}
+      </button>
+      <button className="link-btn" onClick={onBack} style={{ display: 'block', marginTop: 10, textAlign: 'center', width: '100%' }}>
+        ← Zurück zur KI-Analyse
+      </button>
+    </>
+  );
+}
+
+function SuggestionModal({ brew, bean, brews, onClose, onApply }) {
+  const ruleResult = useMemo(() => suggestNext(brew, bean), [brew, bean]);
+  const [showAlts, setShowAlts] = useState(false);
+  const [llmState, setLlmState] = useState('idle'); // idle | loading | success | error
+  const [llmResult, setLlmResult] = useState(null);
+  const [llmError, setLlmError] = useState(null);
+  const [showLlmAlts, setShowLlmAlts] = useState(false);
+  const [llmQuestion, setLlmQuestion] = useState('');
+  const [testResult, setTestResult] = useState(null); // null | 'testing' | string (result)
+  const [showChatPrompt, setShowChatPrompt] = useState(false);
+
+  const buildBeanBrewsForPrompt = () => brews
+    .filter(b => b.beanId === bean.id && b.id !== brew.id)
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
+    .slice(-10);
+
+  const renderAction = (action) => {
+    if (!action || action.kind === 'none' || action.kind === 'mechanical') return null;
+    return (
+      <button className="btn-primary" onClick={() => onApply(action)}>
+        Anwenden & neuer Shot
+      </button>
+    );
+  };
+
+  const requestLlmAnalysis = async () => {
+    setLlmState('loading');
+    setLlmError(null);
+    try {
+      const beanBrews = brews
+        .filter(b => b.beanId === bean.id && b.id !== brew.id)
+        .sort((a, b) => new Date(a.date) - new Date(b.date))
+        .slice(-10);
+
+      const prompt = buildArtifactPrompt(brew, bean, beanBrews, llmQuestion);
+
+      // window.claude.complete only exists inside Claude.ai artifact sandbox.
+      // In the standalone PWA, the chat-prompt-copy workaround is the only path.
+      if (typeof window === 'undefined' || !window.claude || typeof window.claude.complete !== 'function') {
+        throw new Error('In-App-KI ist in der Standalone-App nicht verfügbar (window.claude.complete existiert nur im Claude-Artefakt). Nutze den "Analyse-Prompt für Chat erzeugen"-Button.');
+      }
+
+      // Defensive wrapper: never lets the underlying call reject — wraps everything in {ok, text|error}.
+      // This is meant to prevent the artifact runtime from showing its own "Error in Claude completion" dialog.
+      const safeComplete = (p) => new Promise((resolve) => {
+        try {
+          const ret = window.claude.complete(p);
+          if (ret && typeof ret.then === 'function') {
+            ret.then(
+              (v) => resolve({ ok: true, value: v }),
+              (e) => resolve({ ok: false, error: e?.message || String(e), name: e?.name || 'Error' })
+            );
+          } else {
+            // sync return — unusual but handle
+            resolve({ ok: true, value: ret });
+          }
+        } catch (syncErr) {
+          resolve({ ok: false, error: syncErr?.message || String(syncErr), name: syncErr?.name || 'Error' });
+        }
+      });
+
+      const callResult = await safeComplete(prompt);
+      if (!callResult.ok) {
+        throw new Error(`window.claude.complete schlägt fehl (${callResult.name}): ${callResult.error}\n\nFalls dies wiederholt auftritt, nutze den "Im Chat analysieren"-Button unten.`);
+      }
+
+      let text = callResult.value;
+      console.log('[LLM] Raw text:', text);
+
+      if (typeof text !== 'string') {
+        throw new Error(`Unerwarteter Rückgabetyp ${typeof text}: ${JSON.stringify(text).slice(0, 300)}`);
+      }
+      text = text.trim();
+      if (!text) {
+        throw new Error('Leere Antwort vom Modell.');
+      }
+
+      // Robust JSON extraction
+      let clean = text.replace(/```[a-zA-Z]*\s*/g, '').replace(/```/g, '').trim();
+      if (!clean.startsWith('{')) {
+        const firstBrace = clean.indexOf('{');
+        const lastBrace = clean.lastIndexOf('}');
+        if (firstBrace >= 0 && lastBrace > firstBrace) {
+          clean = clean.slice(firstBrace, lastBrace + 1);
+        }
+      }
+      // Strip trailing commas before } or ] which would break JSON.parse
+      clean = clean.replace(/,(\s*[}\]])/g, '$1');
+
+      let parsed = null;
+      try {
+        parsed = JSON.parse(clean);
+      } catch (parseErr) {
+        console.warn('[LLM] JSON parse failed, falling back to plain-text mode:', parseErr.message);
+      }
+
+      // Validate parsed shape; if anything is missing/invalid, fall back to plain-text
+      const isValid = parsed
+        && typeof parsed === 'object'
+        && parsed.primary
+        && typeof parsed.primary.description === 'string';
+
+      if (isValid) {
+        setLlmResult(parsed);
+      } else {
+        // Fallback: show the model's raw text as the diagnosis, no Apply button
+        setLlmResult({
+          diagnosis: text,
+          primary: null,
+          alternatives: [],
+          reasoning: null,
+          confidence: null,
+          uncertainties: [],
+          isFallback: true,
+        });
+      }
+      setLlmState('success');
+    } catch (err) {
+      console.error('[LLM] analysis failed:', err);
+      setLlmError(err.message || 'unbekannter Fehler');
+      setLlmState('error');
+    }
+  };
+
+  const runApiTest = async () => {
+    setTestResult('testing');
+    try {
+      if (typeof window === 'undefined' || !window.claude || typeof window.claude.complete !== 'function') {
+        setTestResult(`window.claude.complete ist nicht definiert.\n\ntypeof window: ${typeof window}\ntypeof window.claude: ${typeof window?.claude}\ntypeof window.claude?.complete: ${typeof window?.claude?.complete}`);
+        return;
+      }
+      const t0 = Date.now();
+      const resp = await window.claude.complete('Antworte nur mit dem Wort: OK');
+      const ms = Date.now() - t0;
+      console.log('[API-Test] Response:', resp);
+      setTestResult(`✓ Erfolg in ${ms}ms.\n\nRückgabetyp: ${typeof resp}\nLänge: ${typeof resp === 'string' ? resp.length : '?'}\n\nInhalt:\n${typeof resp === 'string' ? resp.slice(0, 400) : JSON.stringify(resp).slice(0, 400)}`);
+    } catch (err) {
+      console.error('[API-Test] threw:', err);
+      setTestResult(`✗ window.claude.complete warf: ${err.name || 'Error'} — ${err.message || String(err)}`);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Vorschlag</h3>
+          <button className="close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          {/* Rule-based primary */}
+          <div className="suggestion-source">Regelbasiert</div>
+          <div className="diagnosis">{ruleResult.diagnosis}</div>
+          {ruleResult.beanAgeNote && (
+            <div className="bean-age-note">{ruleResult.beanAgeNote}</div>
+          )}
+          <div className="primary-suggestion">
+            <div className="suggestion-label">Empfehlung</div>
+            <div className="suggestion-text">{ruleResult.primary.description}</div>
+            {renderAction(ruleResult.primary)}
+          </div>
+          {ruleResult.alternatives.length > 0 && (
+            <>
+              <button className="link-btn" onClick={() => setShowAlts(!showAlts)}>
+                {showAlts ? '▾ Alternativen einklappen' : '▸ Alternativen anzeigen'}
+              </button>
+              {showAlts && (
+                <div className="alternatives">
+                  {ruleResult.alternatives.map((alt, i) => (
+                    <div key={i} className="alt-item">
+                      <div className="suggestion-text">{alt.description}</div>
+                      {renderAction(alt)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* LLM deep analysis */}
+          <div className="llm-section">
+            <div className="suggestion-source">Tiefenanalyse mit Bohnenhistorie</div>
+            {showChatPrompt ? (
+              <ChatPromptView
+                prompt={buildChatPrompt(brew, bean, buildBeanBrewsForPrompt(), llmQuestion)}
+                onBack={() => setShowChatPrompt(false)}
+              />
+            ) : (
+              <>
+            {llmState === 'idle' && (
+              <>
+                <div className="llm-section-hint">Bezieht Bohnenhistorie ({brews.filter(b => b.beanId === bean.id).length} Shots), Notizen und volle Bewertungen ein. Antwort kommt im Claude-Chat — du gibst die Empfehlung manuell hier ein.</div>
+                <textarea
+                  className="textarea"
+                  rows={2}
+                  placeholder="Optional: Zusatzfrage stellen, z.B. 'Warum schmeckt diese Bohne immer kreidig?'"
+                  value={llmQuestion}
+                  onChange={(e) => setLlmQuestion(e.target.value)}
+                  style={{ marginBottom: 10 }}
+                />
+                <button className="btn-primary" onClick={() => setShowChatPrompt(true)} style={{ width: '100%' }}>
+                  Analyse-Prompt für Chat erzeugen
+                </button>
+                <button className="link-btn" onClick={requestLlmAnalysis} style={{ display: 'block', marginTop: 10, textAlign: 'center', width: '100%' }}>
+                  In-App-KI versuchen (experimentell, crasht auf iOS)
+                </button>
+              </>
+            )}
+            {llmState === 'loading' && (
+              <div className="llm-loading">
+                <div className="spinner"></div>
+                <span>Analysiere {brews.filter(b => b.beanId === bean.id).length} Shots dieser Bohne …</span>
+              </div>
+            )}
+            {llmState === 'error' && (
+              <div className="llm-error">
+                Analyse fehlgeschlagen: {llmError}
+                <button className="link-btn" onClick={requestLlmAnalysis} style={{ display: 'block', marginTop: 10 }}>Nochmal versuchen</button>
+                <button className="link-btn" onClick={() => setShowChatPrompt(true)} style={{ display: 'block', marginTop: 4 }}>
+                  → Workaround: Im Claude-Chat analysieren
+                </button>
+                <button className="link-btn" onClick={runApiTest} style={{ display: 'block', marginTop: 4 }}>
+                  {testResult === 'testing' ? 'Teste API …' : 'Minimal-API-Test ausführen (Diagnose)'}
+                </button>
+                {testResult && testResult !== 'testing' && (
+                  <div style={{ marginTop: 10, padding: 10, background: 'rgba(0,0,0,0.04)', borderRadius: 6, fontSize: 12, fontFamily: 'IBM Plex Mono, monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 240, overflowY: 'auto', color: 'var(--text)' }}>
+                    {testResult}
+                  </div>
+                )}
+              </div>
+            )}
+            {llmState === 'success' && llmResult && (
+              <>
+                <div className="diagnosis" style={{ whiteSpace: 'pre-wrap' }}>{llmResult.diagnosis}</div>
+                {llmResult.isFallback && (
+                  <div className="bean-age-note">
+                    Hinweis: Antwort kam nicht in striktem JSON-Format zurück — zeige Roh-Analyse. Kein "Anwenden"-Button verfügbar.
+                  </div>
+                )}
+                {llmResult.primary && (
+                  <div className="primary-suggestion">
+                    <div className="suggestion-label">
+                      Empfehlung
+                      {llmResult.confidence && (
+                        <span className={`confidence-badge confidence-${llmResult.confidence}`}>
+                          {llmResult.confidence === 'high' ? 'hoch' : llmResult.confidence === 'medium' ? 'mittel' : 'niedrig'}
+                        </span>
+                      )}
+                    </div>
+                    <div className="suggestion-text">{llmResult.primary.description}</div>
+                    {renderAction(llmResult.primary)}
+                  </div>
+                )}
+                {llmResult.reasoning && (
+                  <div className="llm-reasoning">{llmResult.reasoning}</div>
+                )}
+                {llmResult.uncertainties && llmResult.uncertainties.length > 0 && (
+                  <div className="llm-uncertainties">
+                    <div className="suggestion-label">Unsicherheiten</div>
+                    <ul>
+                      {llmResult.uncertainties.map((u, i) => <li key={i}>{u}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {llmResult.alternatives && llmResult.alternatives.length > 0 && (
+                  <>
+                    <button className="link-btn" onClick={() => setShowLlmAlts(!showLlmAlts)}>
+                      {showLlmAlts ? '▾ Alternativen einklappen' : '▸ Alternativen anzeigen'}
+                    </button>
+                    {showLlmAlts && (
+                      <div className="alternatives">
+                        {llmResult.alternatives.map((alt, i) => (
+                          <div key={i} className="alt-item">
+                            <div className="suggestion-text">{alt.description}</div>
+                            {renderAction(alt)}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+                <button className="link-btn" onClick={() => { setLlmState('idle'); setLlmResult(null); setLlmQuestion(''); setShowLlmAlts(false); }} style={{ display: 'block', marginTop: 12 }}>
+                  ↻ Neue Analyse / andere Frage
+                </button>
+              </>
+            )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// LOG VIEW
+// =============================================================================
+
+function LogView({ brews, beans, onSelectBrew, onRepeat }) {
+  const [filterBean, setFilterBean] = useState('all');
+  const [bestOnly, setBestOnly] = useState(false);
+  const [showAll, setShowAll] = useState(false); // false = letzte 30 Tage, true = alle
+
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const filtered = brews
+    .filter(b => showAll || (b.date && new Date(b.date).getTime() >= cutoff))
+    .filter(b => filterBean === 'all' || b.beanId === filterBean)
+    .filter(b => !bestOnly || b.rating >= 4)
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  const totalOlder = brews.filter(b => b.date && new Date(b.date).getTime() < cutoff).length;
+
+  return (
+    <div className="log-view">
+      <div className="card">
+        <label className="field-label">Filter</label>
+        <select value={filterBean} onChange={(e) => setFilterBean(e.target.value)} className="select">
+          <option value="all">Alle Bohnen</option>
+          {beans.map(b => <option key={b.id} value={b.id}>{b.roaster} — {b.name}</option>)}
+        </select>
+        <div style={{ marginTop: 8 }}>
+          <Checkbox label="Nur Best Shots (4–5★)" checked={bestOnly} onChange={setBestOnly} />
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <Checkbox
+            label={showAll ? 'Alle Shots zeigen' : `Letzte 30 Tage${totalOlder > 0 ? ` (${totalOlder} ältere ausgeblendet)` : ''}`}
+            checked={showAll}
+            onChange={setShowAll}
+          />
+        </div>
+      </div>
+
+      <div className="brew-list">
+        {filtered.length === 0 && <div className="muted center">Keine Shots</div>}
+        {filtered.map(brew => {
+          const bean = beans.find(b => b.id === brew.beanId);
+          const ratio = brew.doseG > 0 ? brew.yieldG / brew.doseG : null;
+          return (
+            <div key={brew.id} className="brew-row">
+              <div className="brew-row-content" onClick={() => onSelectBrew(brew)}>
+                <div className="brew-row-top">
+                  <span className="brew-bean">{bean ? `${bean.roaster} — ${bean.name}` : '(Bohne entfernt)'}</span>
+                  <span className="brew-rating">{'★'.repeat(brew.rating)}{'☆'.repeat(5 - brew.rating)}</span>
+                </div>
+                <div className="brew-row-meta mono">
+                  <span>{formatDateTime(brew.date)}</span>
+                  {ratio != null && <span>1:{ratio.toFixed(2)}</span>}
+                  <span>{brew.timeS}s</span>
+                  <span>{brew.tempC}°C</span>
+                  <span>m{brew.grindNiche}</span>
+                </div>
+                {brew.quickTag && (
+                <div className="brew-tag">{getQuickTagLabel(brew.quickTag)}</div>
+              )}
+              </div>
+              {bean && !bean.archived && (
+                <button
+                  className="brew-row-repeat"
+                  onClick={(e) => { e.stopPropagation(); onRepeat(brew); }}
+                  title="Wiederholen — Werte in Brew-Form übernehmen"
+                  type="button"
+                >
+                  ↻
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// BEANS VIEW
+// =============================================================================
+
+function BeansView({ beans, brews, onAdd, onUpdate, onArchive, onUnarchive, onDelete, forceAddBean, onClearForceAddBean, onExport, onImport, storageStatus }) {
+  const [showArchived, setShowArchived] = useState(false);
+  const [editingBean, setEditingBean] = useState(null);
+  const [dataIOMode, setDataIOMode] = useState(null); // 'export' | 'import' | null
+  const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => {
+    if (forceAddBean) {
+      setEditingBean({ id: null });
+      onClearForceAddBean();
+    }
+  }, [forceAddBean, onClearForceAddBean]);
+
+  const q = searchQuery.trim().toLowerCase();
+  const visible = beans
+    .filter(b => showArchived ? b.archived : !b.archived)
+    .filter(b => !q || [b.roaster, b.name, b.country].filter(Boolean).some(s => s.toLowerCase().includes(q)));
+
+  const [expandedBeanId, setExpandedBeanId] = useState(null);
+
+  return (
+    <div className="beans-view">
+      <div className="card">
+        <button className="btn-primary" onClick={() => setEditingBean({ id: null })}>+ Neue Bohne</button>
+        {beans.length > 3 && (
+          <input
+            type="search"
+            className="text-input"
+            style={{ marginTop: 10 }}
+            placeholder="Suche (Röster, Name, Land)…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        )}
+        <div style={{ marginTop: 8 }}>
+          <Checkbox label="Archivierte zeigen" checked={showArchived} onChange={setShowArchived} />
+        </div>
+      </div>
+
+      <div className="bean-list">
+        {visible.length === 0 && <div className="muted center">{showArchived ? 'Keine archivierten Bohnen' : 'Keine aktiven Bohnen'}</div>}
+        {visible.map(bean => {
+          const beanBrews = brews.filter(br => br.beanId === bean.id);
+          const avgRating = beanBrews.length > 0
+            ? (beanBrews.reduce((s, b) => s + (b.rating || 0), 0) / beanBrews.length).toFixed(1)
+            : '–';
+          const age = daysSince(bean.roastDate);
+          const isExpanded = expandedBeanId === bean.id;
+          const bestShots = [...beanBrews]
+            .sort((a, b) => (b.rating || 0) - (a.rating || 0) || new Date(b.date) - new Date(a.date))
+            .slice(0, 3)
+            .filter(b => (b.rating || 0) > 0);
+          return (
+            <div key={bean.id} className={`bean-row ${isExpanded ? 'expanded' : ''}`}>
+              <div className="bean-row-header" onClick={() => setExpandedBeanId(isExpanded ? null : bean.id)}>
+                <div className="bean-row-main">
+                  <div className="bean-row-top">
+                    <span className="bean-name"><strong>{bean.name}</strong></span>
+                    <span className="bean-roaster muted">{bean.roaster}</span>
+                  </div>
+                  <div className="bean-row-meta mono">
+                    <span>{ROAST_LEVELS.find(r => r.id === bean.roastLevel)?.label}</span>
+                    {age != null && <span>{age}d</span>}
+                    <span>{beanBrews.length} Shots</span>
+                    <span>ø {avgRating}★</span>
+                  </div>
+                </div>
+                <button
+                  className="bean-row-edit"
+                  onClick={(e) => { e.stopPropagation(); setEditingBean(bean); }}
+                  title="Bearbeiten"
+                  type="button"
+                >
+                  ✎
+                </button>
+              </div>
+              {isExpanded && (
+                <div className="bean-row-detail">
+                  {bean.country && <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>Herkunft: {bean.country} · {PROCESSES.find(p => p.id === bean.process)?.label}</div>}
+                  {bean.notes && <div style={{ fontSize: 13, marginBottom: 8, fontStyle: 'italic' }}>"{bean.notes}"</div>}
+                  {bestShots.length > 0 ? (
+                    <>
+                      <div className="field-label" style={{ marginTop: 4 }}>Beste Shots</div>
+                      <div className="best-shots-list">
+                        {bestShots.map(b => {
+                          const r = b.doseG > 0 ? b.yieldG / b.doseG : null;
+                          return (
+                            <div key={b.id} className="best-shot mono">
+                              <span className="best-shot-rating">{'★'.repeat(b.rating || 0)}</span>
+                              <span>{b.doseG}g→{b.yieldG}g</span>
+                              {r != null && <span>1:{r.toFixed(2)}</span>}
+                              <span>{b.timeS}s</span>
+                              <span>{b.tempC}°C</span>
+                              <span>m{b.grindNiche}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="muted" style={{ fontSize: 13 }}>Noch keine bewerteten Shots</div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Daten-Transfer */}
+      <div className="card data-io-card">
+        <label className="field-label">Daten transferieren</label>
+        <div className="data-io-hint">
+          Für Backup oder Migration zu neuer App-Version. Daten leben sonst nur in dieser Artefakt-Instanz.
+        </div>
+        <div className="data-io-buttons">
+          <button className="btn-secondary" onClick={() => setDataIOMode('export')}>Export</button>
+          <button className="btn-secondary" onClick={() => setDataIOMode('import')}>Import</button>
+        </div>
+        <div className="data-io-stats mono">
+          {beans.length} Bohnen · {brews.length} Shots
+        </div>
+      </div>
+
+      {editingBean && (
+        <BeanEditor
+          bean={editingBean}
+          onSave={(b) => {
+            if (editingBean.id) onUpdate(b);
+            else onAdd(b);
+            setEditingBean(null);
+          }}
+          onCancel={() => setEditingBean(null)}
+          onArchive={editingBean.id ? () => { onArchive(editingBean); setEditingBean(null); } : null}
+          onUnarchive={editingBean.id && editingBean.archived ? () => { onUnarchive(editingBean); setEditingBean(null); } : null}
+          onDelete={editingBean.id ? () => {
+            if (confirm('Bohne und alle zugehörigen Shots löschen?')) {
+              onDelete(editingBean);
+              setEditingBean(null);
+            }
+          } : null}
+        />
+      )}
+
+      {dataIOMode === 'export' && (
+        <ExportDataModal jsonStr={onExport()} onClose={() => setDataIOMode(null)} />
+      )}
+      {dataIOMode === 'import' && (
+        <ImportDataModal
+          onClose={() => setDataIOMode(null)}
+          onImport={async (json) => { await onImport(json); setDataIOMode(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ExportDataModal({ jsonStr, onClose }) {
+  const [copied, setCopied] = useState(false);
+  const textareaRef = useRef(null);
+
+  const handleCopy = async () => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(jsonStr);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+        return;
+      }
+    } catch {}
+    // Fallback: select textarea content for manual copy
+    if (textareaRef.current) {
+      textareaRef.current.select();
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Daten exportieren</h3>
+          <button className="close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="data-io-hint" style={{ marginBottom: 12 }}>
+            Kopiere den JSON-Text und speichere ihn extern (Notiz-App, Mail an dich selbst, etc.). Beim Import in eine neue Version fügst du diesen Text wieder ein.
+          </div>
+          <textarea
+            ref={textareaRef}
+            className="textarea mono"
+            value={jsonStr}
+            readOnly
+            rows={12}
+            onFocus={(e) => e.target.select()}
+            style={{ fontSize: 12 }}
+          />
+          <div className="modal-actions">
+            <button className="btn-primary" onClick={handleCopy}>{copied ? '✓ Kopiert' : 'In Zwischenablage'}</button>
+            <button className="btn-secondary" onClick={onClose}>Schließen</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImportDataModal({ onClose, onImport }) {
+  const [jsonText, setJsonText] = useState('');
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleImport = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      await onImport(jsonText);
+    } catch (err) {
+      setError(err.message || 'Import fehlgeschlagen');
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>Daten importieren</h3>
+          <button className="close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="data-io-hint" style={{ marginBottom: 12 }}>
+            Füge den zuvor exportierten JSON-Text ein. <strong>Achtung:</strong> ersetzt deine aktuellen Daten komplett.
+          </div>
+          <textarea
+            className="textarea mono"
+            placeholder='{"version":1,"beans":[...],"brews":[...]}'
+            value={jsonText}
+            onChange={(e) => setJsonText(e.target.value)}
+            rows={10}
+            style={{ fontSize: 12 }}
+          />
+          {error && (
+            <div className="llm-error" style={{ marginTop: 10 }}>
+              {error}
+            </div>
+          )}
+          <div className="modal-actions">
+            <button className="btn-primary" onClick={handleImport} disabled={loading || !jsonText.trim()}>
+              {loading ? 'Importiere…' : 'Importieren & ersetzen'}
+            </button>
+            <button className="btn-secondary" onClick={onClose}>Abbrechen</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BeanEditor({ bean, onSave, onCancel, onArchive, onUnarchive, onDelete }) {
+  const [form, setForm] = useState({
+    id: bean.id || uuid(),
+    roaster: bean.roaster || '',
+    name: bean.name || '',
+    country: bean.country || '',
+    process: bean.process || 'washed',
+    roastDate: bean.roastDate ? bean.roastDate.slice(0, 10) : new Date().toISOString().slice(0, 10),
+    roastLevel: bean.roastLevel || 'medium',
+    notes: bean.notes || '',
+    archived: bean.archived || false,
+    createdAt: bean.createdAt || new Date().toISOString(),
+  });
+
+  const update = (patch) => setForm({ ...form, ...patch });
+
+  const handleSave = () => {
+    if (!form.roaster.trim() || !form.name.trim()) { alert('Röster und Name sind Pflicht'); return; }
+    onSave({ ...form, roastDate: new Date(form.roastDate).toISOString() });
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{bean.id ? 'Bohne bearbeiten' : 'Neue Bohne'}</h3>
+          <button className="close-btn" onClick={onCancel}>×</button>
+        </div>
+        <div className="modal-body">
+          <label className="field-label">Röster</label>
+          <input className="text-input" value={form.roaster} onChange={(e) => update({ roaster: e.target.value })} />
+          <label className="field-label">Name</label>
+          <input className="text-input" value={form.name} onChange={(e) => update({ name: e.target.value })} />
+          <label className="field-label">Land (optional)</label>
+          <input className="text-input" value={form.country} onChange={(e) => update({ country: e.target.value })} />
+          <label className="field-label">Aufbereitung</label>
+          <select className="select" value={form.process} onChange={(e) => update({ process: e.target.value })}>
+            {PROCESSES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </select>
+          <label className="field-label">Röstdatum</label>
+          <input type="date" className="text-input" value={form.roastDate} onChange={(e) => update({ roastDate: e.target.value })} />
+          <label className="field-label">Röstgrad</label>
+          <select className="select" value={form.roastLevel} onChange={(e) => update({ roastLevel: e.target.value })}>
+            {ROAST_LEVELS.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+          </select>
+          <label className="field-label">Notizen</label>
+          <textarea className="textarea" rows={2} value={form.notes} onChange={(e) => update({ notes: e.target.value })} />
+
+          <div className="modal-actions">
+            <button className="btn-primary" onClick={handleSave}>Speichern</button>
+            {onArchive && !form.archived && <button className="btn-secondary" onClick={onArchive}>Archivieren</button>}
+            {onUnarchive && <button className="btn-secondary" onClick={onUnarchive}>Reaktivieren</button>}
+            {onDelete && <button className="btn-danger" onClick={onDelete}>Löschen</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// BREW DETAIL
+// =============================================================================
+
+function BrewDetail({ brew, bean, onClose, onDelete }) {
+  if (!brew) return null;
+  const target = bean ? TARGETS[bean.roastLevel] : null;
+  const ratio = brew.doseG > 0 ? brew.yieldG / brew.doseG : null;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{bean ? `${bean.roaster} — ${bean.name}` : 'Shot'}</h3>
+          <button className="close-btn" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="muted mono" style={{ marginBottom: 12 }}>{formatDateTime(brew.date)}</div>
+          <div className="detail-grid">
+            <div><span className="muted">Sieb</span><span className="mono">{BASKETS.find(b => b.id === brew.basket)?.label || brew.basket}</span></div>
+            <div><span className="muted">Dose</span><span className="mono">{brew.doseG}g</span></div>
+            <div><span className="muted">Yield</span><span className="mono">{brew.yieldG}g</span></div>
+            <div><span className="muted">Ratio</span><span className="mono">{ratio != null ? `1:${ratio.toFixed(2)}` : '—'}</span></div>
+            <div><span className="muted">Zeit</span><span className="mono">{brew.timeS}s</span></div>
+            <div><span className="muted">Temp</span><span className="mono">{brew.tempC}°C</span></div>
+            <div><span className="muted">Mahlgrad</span><span className="mono">{brew.grindNiche}</span></div>
+          </div>
+          {(brew.channeling || brew.gusher || brew.choke) && (
+            <div className="detail-section">
+              <span className="muted">Beobachtung: </span>
+              {brew.channeling && <span className="tag-inline">Channeling</span>}
+              {brew.gusher && <span className="tag-inline">Gusher</span>}
+              {brew.choke && <span className="tag-inline">Choke</span>}
+            </div>
+          )}
+          <div className="detail-section">
+            <div>{'★'.repeat(brew.rating)}{'☆'.repeat(5 - brew.rating)}</div>
+            {brew.quickTag && <div className="tag-inline">{getQuickTagLabel(brew.quickTag)}</div>}
+          </div>
+          {target && (
+            <div className="detail-section">
+              <ReferenceBar label="Ratio" value={ratio} ranges={target.ratio} formatValue={(v) => `1:${v.toFixed(2)}`} />
+              <ReferenceBar label="Zeit" value={brew.timeS} ranges={target.time} formatValue={(v) => `${v.toFixed(0)}s`} />
+              <ReferenceBar label="Temperatur" value={brew.tempC} ranges={target.temp} formatValue={(v) => `${v.toFixed(1)}°C`} />
+            </div>
+          )}
+          {brew.notes && (
+            <div className="detail-section">
+              <span className="muted">Notizen:</span>
+              <div>{brew.notes}</div>
+            </div>
+          )}
+          <div className="modal-actions">
+            <button className="btn-danger" onClick={() => {
+              if (confirm('Diesen Shot löschen?')) { onDelete(brew); onClose(); }
+            }}>Löschen</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// MAIN APP
+// =============================================================================
+
+function App() {
+  const [activeTab, setActiveTab] = useState('brew');
+  const [beans, setBeans] = useState([]);
+  const [brews, setBrews] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [selectedBeanId, setSelectedBeanId] = useState(null);
+  const [brewDraft, setBrewDraft] = useState(emptyBrew(null, 'lm-14'));
+  const [lastSavedBrew, setLastSavedBrew] = useState(null);
+  const [suggestionContext, setSuggestionContext] = useState(null);
+  const [selectedBrewDetail, setSelectedBrewDetail] = useState(null);
+  const [forceAddBean, setForceAddBean] = useState(false);
+  const [storageStatus, setStorageStatus] = useState({ available: null, lastLoad: null, lastSave: null, beansLoaded: 0, brewsLoaded: 0, errors: [] });
+
+  // Load on mount
+  useEffect(() => {
+    (async () => {
+      const { beans, brews, diag } = await loadAll();
+      setBeans(beans);
+      setBrews(brews);
+      setStorageStatus(s => ({ ...s, available: diag.available, lastLoad: new Date().toISOString(), beansLoaded: diag.beansLoaded, brewsLoaded: diag.brewsLoaded, errors: diag.errors }));
+      // Pick last-used bean as default
+      if (brews.length > 0) {
+        const last = [...brews].sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+        const stillActive = beans.find(b => b.id === last.beanId && !b.archived);
+        if (stillActive) setSelectedBeanId(stillActive.id);
+        else if (beans.find(b => !b.archived)) setSelectedBeanId(beans.find(b => !b.archived).id);
+      } else if (beans.find(b => !b.archived)) {
+        setSelectedBeanId(beans.find(b => !b.archived).id);
+      }
+      setLoaded(true);
+    })();
+  }, []);
+
+  // Helper to update lastSave timestamp after every successful save
+  const markSaved = (kind, ok, err) => {
+    setStorageStatus(s => ({
+      ...s,
+      lastSave: ok ? new Date().toISOString() : s.lastSave,
+      errors: ok ? s.errors : [...(s.errors || []), `${kind}: ${err}`].slice(-5),
+    }));
+  };
+
+  // When selected bean changes, refresh draft with sticky defaults from last brew of that bean
+  // Track previous selectedBeanId so we only reset the brew draft when the user
+  // actually switches beans — not when the beans array is mutated (e.g. editing).
+  const prevSelectedBeanIdRef = useRef(null);
+  useEffect(() => {
+    if (!selectedBeanId) return;
+    if (prevSelectedBeanIdRef.current === selectedBeanId) return;
+    prevSelectedBeanIdRef.current = selectedBeanId;
+    const bean = beans.find(b => b.id === selectedBeanId);
+    if (!bean) return;
+    const beanBrews = brews.filter(br => br.beanId === selectedBeanId).sort((a, b) => new Date(b.date) - new Date(a.date));
+    if (beanBrews.length > 0) {
+      const last = beanBrews[0];
+      setBrewDraft({
+        ...emptyBrew(selectedBeanId, last.basket),
+        beanId: selectedBeanId,
+        basket: last.basket,
+        doseG: last.doseG,
+        tempC: last.tempC,
+        grindNiche: last.grindNiche,
+      });
+    } else {
+      // No history for this bean — use roast-level midpoint
+      const target = TARGETS[bean.roastLevel];
+      const tempMid = (target.temp.green[0] + target.temp.green[1]) / 2;
+      setBrewDraft({
+        ...emptyBrew(selectedBeanId, 'lm-14'),
+        tempC: tempMid,
+      });
+    }
+  }, [selectedBeanId, beans]);
+
+  // Save handlers
+  const handleSaveBrew = async (newBrew) => {
+    const next = [...brews, newBrew];
+    setBrews(next);
+    const r = await saveBrews(next);
+    markSaved('brews', r.ok, r.error);
+  };
+
+  const handleAddBean = async (bean) => {
+    const next = [...beans, bean];
+    setBeans(next);
+    const r = await saveBeans(next);
+    markSaved('beans', r.ok, r.error);
+    if (!selectedBeanId) setSelectedBeanId(bean.id);
+  };
+
+  const handleUpdateBean = async (bean) => {
+    const next = beans.map(b => b.id === bean.id ? bean : b);
+    setBeans(next);
+    const r = await saveBeans(next);
+    markSaved('beans', r.ok, r.error);
+  };
+
+  const handleArchiveBean = async (bean) => {
+    await handleUpdateBean({ ...bean, archived: true });
+    if (selectedBeanId === bean.id) {
+      const nextActive = beans.find(b => b.id !== bean.id && !b.archived);
+      setSelectedBeanId(nextActive?.id || null);
+    }
+  };
+
+  const handleUnarchiveBean = async (bean) => {
+    await handleUpdateBean({ ...bean, archived: false });
+  };
+
+  const handleDeleteBean = async (bean) => {
+    const nextBeans = beans.filter(b => b.id !== bean.id);
+    const nextBrews = brews.filter(br => br.beanId !== bean.id);
+    setBeans(nextBeans);
+    setBrews(nextBrews);
+    const r1 = await saveBeans(nextBeans);
+    const r2 = await saveBrews(nextBrews);
+    markSaved('delete-bean', r1.ok && r2.ok, r1.error || r2.error);
+    if (selectedBeanId === bean.id) {
+      const nextActive = nextBeans.find(b => !b.archived);
+      setSelectedBeanId(nextActive?.id || null);
+    }
+  };
+
+  const handleDeleteBrew = async (brew) => {
+    const next = brews.filter(b => b.id !== brew.id);
+    setBrews(next);
+    const r = await saveBrews(next);
+    markSaved('brews', r.ok, r.error);
+    // Clear lastSavedBrew if the user just deleted it — prevents stale "Was nächstes?" state
+    if (lastSavedBrew && lastSavedBrew.id === brew.id) {
+      setLastSavedBrew(null);
+    }
+  };
+
+  const handleApplySuggestion = (action) => {
+    if (!lastSavedBrew) return;
+    const newDraft = { ...lastSavedBrew, id: null, date: null, yieldG: '', timeS: '', rating: 0, quickTag: null, fullRating: null, channeling: false, gusher: false, choke: false, notes: '' };
+    if (action.kind === 'grind') newDraft.grindNiche = +(newDraft.grindNiche + action.delta).toFixed(1);
+    else if (action.kind === 'temp') newDraft.tempC = +(newDraft.tempC + action.delta).toFixed(1);
+    else if (action.kind === 'ratio') {
+      const oldRatio = lastSavedBrew.doseG > 0 ? lastSavedBrew.yieldG / lastSavedBrew.doseG : 2.0;
+      const newRatio = oldRatio + action.delta;
+      // Pre-fill yield with new target so user has a goal to pull to
+      newDraft.yieldG = +(newDraft.doseG * newRatio).toFixed(1);
+      newDraft.timeS = ''; // user will time the new shot
+    }
+    else if (action.kind === 'dose') newDraft.doseG = +(newDraft.doseG + action.delta).toFixed(1);
+    setBrewDraft(newDraft);
+    setSuggestionContext(null);
+    setActiveTab('brew');
+  };
+
+  // Export: serialize beans + brews as JSON
+  const handleExportData = () => {
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      appName: 'espresso-tracker',
+      beans,
+      brews,
+    };
+    return JSON.stringify(payload, null, 2);
+  };
+
+  // Import: validate and replace state + storage
+  const handleImportData = async (jsonStr) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (err) {
+      throw new Error(`JSON ungültig: ${err.message}`);
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('Erwartet ein JSON-Objekt mit "beans" und "brews"-Arrays.');
+    }
+    if (!Array.isArray(parsed.beans)) {
+      throw new Error('Feld "beans" fehlt oder ist kein Array.');
+    }
+    if (!Array.isArray(parsed.brews)) {
+      throw new Error('Feld "brews" fehlt oder ist kein Array.');
+    }
+    // Minimal per-item validation
+    for (let i = 0; i < parsed.beans.length; i++) {
+      const b = parsed.beans[i];
+      if (!b || typeof b !== 'object') throw new Error(`Bohne #${i + 1}: kein Objekt.`);
+      if (!b.id || !b.name || !b.roaster) throw new Error(`Bohne #${i + 1}: id, name oder roaster fehlt.`);
+      if (!b.roastLevel || !TARGETS[b.roastLevel]) throw new Error(`Bohne #${i + 1} "${b.name}": ungültiger roastLevel "${b.roastLevel}".`);
+    }
+    const beanIds = new Set(parsed.beans.map(b => b.id));
+    for (let i = 0; i < parsed.brews.length; i++) {
+      const b = parsed.brews[i];
+      if (!b || typeof b !== 'object') throw new Error(`Brew #${i + 1}: kein Objekt.`);
+      if (!b.id || !b.beanId) throw new Error(`Brew #${i + 1}: id oder beanId fehlt.`);
+      if (!beanIds.has(b.beanId)) throw new Error(`Brew #${i + 1}: verweist auf nicht vorhandene Bohne "${b.beanId}".`);
+    }
+    // All good — replace
+    setBeans(parsed.beans);
+    setBrews(parsed.brews);
+    const r1 = await saveBeans(parsed.beans);
+    const r2 = await saveBrews(parsed.brews);
+    markSaved('import', r1.ok && r2.ok, r1.error || r2.error);
+    // Reset transient state
+    setLastSavedBrew(null);
+    setSuggestionContext(null);
+    setSelectedBrewDetail(null);
+    // Pick a sensible selected bean
+    const firstActive = parsed.beans.find(b => !b.archived);
+    setSelectedBeanId(firstActive ? firstActive.id : null);
+    prevSelectedBeanIdRef.current = null; // force draft re-init
+  };
+
+  if (!loaded) {
+    return (
+      <div className="app-shell">
+        <Styles />
+        <div className="loading">Lade …</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <Styles />
+      <header className="app-header">
+        <span className="app-title">Espresso Log</span>
+        <span className="app-subtitle mono">Micra · Niche</span>
+      </header>
+
+      <main className="app-main">
+        {activeTab === 'brew' && (
+          <BrewView
+            beans={beans}
+            brews={brews}
+            selectedBeanId={selectedBeanId}
+            setSelectedBeanId={setSelectedBeanId}
+            onSave={handleSaveBrew}
+            onShowSuggestion={(brew, bean) => setSuggestionContext({ brew, bean })}
+            lastSavedBrew={lastSavedBrew}
+            setLastSavedBrew={setLastSavedBrew}
+            brewDraft={brewDraft}
+            setBrewDraft={setBrewDraft}
+            onAddBean={() => { setActiveTab('beans'); setForceAddBean(true); }}
+          />
+        )}
+        {activeTab === 'log' && (
+          <LogView
+            brews={brews}
+            beans={beans}
+            onSelectBrew={(b) => setSelectedBrewDetail(b)}
+            onRepeat={(b) => {
+              // Copy recipe values into fresh draft, switch to brew tab
+              setSelectedBeanId(b.beanId);
+              setBrewDraft({
+                ...emptyBrew(b.beanId, b.basket),
+                beanId: b.beanId,
+                basket: b.basket,
+                doseG: b.doseG,
+                yieldG: b.yieldG,
+                timeS: b.timeS,
+                tempC: b.tempC,
+                grindNiche: b.grindNiche,
+              });
+              setActiveTab('brew');
+            }}
+          />
+        )}
+        {activeTab === 'beans' && (
+          <BeansView
+            beans={beans}
+            brews={brews}
+            onAdd={handleAddBean}
+            onUpdate={handleUpdateBean}
+            onArchive={handleArchiveBean}
+            onUnarchive={handleUnarchiveBean}
+            onDelete={handleDeleteBean}
+            forceAddBean={forceAddBean}
+            onClearForceAddBean={() => setForceAddBean(false)}
+            onExport={handleExportData}
+            onImport={handleImportData}
+            storageStatus={storageStatus}
+          />
+        )}
+      </main>
+
+      <nav className="bottom-nav">
+        <button className={activeTab === 'brew' ? 'active' : ''} onClick={() => setActiveTab('brew')}>Brew</button>
+        <button className={activeTab === 'log' ? 'active' : ''} onClick={() => setActiveTab('log')}>Logbuch</button>
+        <button className={activeTab === 'beans' ? 'active' : ''} onClick={() => setActiveTab('beans')}>Bohnen</button>
+      </nav>
+
+      {suggestionContext && (
+        <SuggestionModal
+          brew={suggestionContext.brew}
+          bean={suggestionContext.bean}
+          brews={brews}
+          onClose={() => setSuggestionContext(null)}
+          onApply={handleApplySuggestion}
+        />
+      )}
+
+      {selectedBrewDetail && (
+        <BrewDetail
+          brew={selectedBrewDetail}
+          bean={beans.find(b => b.id === selectedBrewDetail.beanId)}
+          onClose={() => setSelectedBrewDetail(null)}
+          onDelete={handleDeleteBrew}
+        />
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
+// STYLES
+// =============================================================================
+
+function Styles() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+      :root {
+        --bg: #F5EFE6;
+        --surface: #FBF7F0;
+        --surface-2: #F0E8D8;
+        --text: #2A1810;
+        --text-muted: #8B7D6B;
+        --accent: #B8541F;
+        --accent-soft: #E5C9B6;
+        --green: #6B8E5A;
+        --yellow: #C9A14A;
+        --red: #A6492E;
+        --border: #E5DCC8;
+        --border-strong: #C9BFA8;
+        --shadow: 0 1px 2px rgba(42,24,16,0.06);
+      }
+
+      * { box-sizing: border-box; }
+
+      body, .app-shell {
+        margin: 0;
+        padding: 0;
+        font-family: 'IBM Plex Sans', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 15px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .mono { font-family: 'IBM Plex Mono', monospace; font-feature-settings: "tnum"; }
+
+      .app-shell {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        max-width: 540px;
+        margin: 0 auto;
+        position: relative;
+      }
+
+      .app-header {
+        padding: 14px 18px;
+        background: var(--bg);
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+      .app-title {
+        font-family: 'Fraunces', serif;
+        font-size: 22px;
+        font-weight: 500;
+        font-variation-settings: "opsz" 144;
+        letter-spacing: -0.01em;
+      }
+      .app-subtitle {
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .app-main {
+        flex: 1;
+        padding: 12px 14px 140px;
+        overflow-y: auto;
+      }
+
+      .loading {
+        padding: 40px;
+        text-align: center;
+        color: var(--text-muted);
+      }
+
+      /* Cards */
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px;
+        margin-bottom: 10px;
+        box-shadow: var(--shadow);
+      }
+
+      .field-label {
+        display: block;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-muted);
+        margin-bottom: 8px;
+        font-weight: 500;
+      }
+
+      .muted { color: var(--text-muted); }
+      .center { text-align: center; }
+
+      /* Inputs */
+      .select, .text-input, .textarea, .select-inline {
+        width: 100%;
+        padding: 12px 14px;
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: var(--surface);
+        color: var(--text);
+        font-family: inherit;
+        font-size: 16px;
+      }
+      .select:focus, .text-input:focus, .textarea:focus {
+        outline: 2px solid var(--accent-soft);
+        outline-offset: -1px;
+        border-color: var(--accent);
+      }
+      .text-input { margin-bottom: 8px; }
+      .textarea { resize: vertical; }
+      .select-inline { width: auto; padding: 6px 10px; font-size: 14px; }
+
+      .basket-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+        font-size: 13px;
+      }
+
+      .bean-meta {
+        display: flex;
+        gap: 12px;
+        margin-top: 8px;
+        font-size: 13px;
+        color: var(--text-muted);
+        font-family: 'IBM Plex Mono', monospace;
+      }
+
+      /* Numeric */
+      .numeric-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0;
+        margin-top: 4px;
+      }
+      .numeric-field {
+        background: transparent;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .numeric-field:first-child { padding-top: 6px; }
+      .numeric-field:last-child { padding-bottom: 2px; border-bottom: none; }
+      .numeric-label {
+        font-size: 11px;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 8px;
+        font-weight: 500;
+      }
+      .numeric-label .unit { color: var(--text-muted); margin-left: 6px; }
+      .numeric-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+      }
+      .step-btn {
+        flex-shrink: 0;
+        width: 52px;
+        height: 52px;
+        border: 1px solid var(--border-strong);
+        background: var(--surface);
+        border-radius: 10px;
+        cursor: pointer;
+        color: var(--text);
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-tap-highlight-color: rgba(184,84,31,0.15);
+      }
+      .step-btn svg { display: block; }
+      .step-btn:active { background: var(--accent-soft); transform: scale(0.96); }
+      .numeric-input {
+        flex: 0 0 auto;
+        width: 130px;
+        max-width: 50%;
+        min-width: 0;
+        text-align: center;
+        border: none;
+        background: transparent;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 24px;
+        font-weight: 500;
+        padding: 8px 4px;
+        color: var(--text);
+      }
+      .numeric-input:focus { outline: none; }
+      .numeric-input::-webkit-outer-spin-button,
+      .numeric-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+      .numeric-input { -moz-appearance: textfield; }
+
+      .ratio-display {
+        margin-top: 10px;
+        font-size: 14px;
+        text-align: center;
+        color: var(--text-muted);
+      }
+      .ratio-display .mono { color: var(--text); font-weight: 500; }
+
+      .yield-suggestion {
+        margin-top: 10px;
+        width: 100%;
+        padding: 10px 12px;
+        background: rgba(199, 90, 44, 0.08);
+        color: var(--accent);
+        border: 1px dashed rgba(199, 90, 44, 0.4);
+        border-radius: 8px;
+        font-size: 14px;
+        font-family: inherit;
+        cursor: pointer;
+        text-align: center;
+      }
+      .yield-suggestion:active { background: rgba(199, 90, 44, 0.15); }
+      .yield-suggestion .mono { font-family: 'IBM Plex Mono', monospace; font-weight: 500; }
+
+      .tag-hint {
+        margin: 10px 0 6px;
+        font-size: 13px;
+        color: var(--text-muted);
+        font-style: normal;
+      }
+      .tag-hint em {
+        color: var(--accent);
+        font-style: normal;
+        font-weight: 500;
+      }
+
+      /* Pills */
+      .pill-row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .pill-row-wrap { gap: 8px; margin-top: 12px; }
+      .pill {
+        padding: 10px 14px;
+        border: 1px solid var(--border-strong);
+        background: var(--surface);
+        border-radius: 999px;
+        font-size: 14px;
+        color: var(--text);
+        cursor: pointer;
+        font-family: inherit;
+        min-height: 40px;
+        -webkit-tap-highlight-color: rgba(184,84,31,0.15);
+      }
+      .pill.active {
+        background: var(--accent);
+        color: white;
+        border-color: var(--accent);
+      }
+
+      /* Checkbox pills */
+      .checkbox-row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .checkbox-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px 10px 10px;
+        border: 1px solid var(--border-strong);
+        background: var(--surface);
+        border-radius: 999px;
+        font-size: 14px;
+        cursor: pointer;
+        color: var(--text);
+        font-family: inherit;
+        min-height: 40px;
+        -webkit-tap-highlight-color: rgba(184,84,31,0.15);
+      }
+      .checkbox-pill .cb-box {
+        width: 20px;
+        height: 20px;
+        border: 1px solid var(--border-strong);
+        border-radius: 4px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        background: var(--bg);
+      }
+      .checkbox-pill.checked {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+      .checkbox-pill.checked .cb-box {
+        background: var(--accent);
+        color: white;
+        border-color: var(--accent);
+      }
+
+      /* Stars */
+      .stars {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 12px;
+      }
+      .star {
+        background: none;
+        border: none;
+        font-size: 32px;
+        color: var(--border-strong);
+        cursor: pointer;
+        padding: 4px 6px;
+        line-height: 1;
+        -webkit-tap-highlight-color: rgba(184,84,31,0.15);
+      }
+      .star.filled { color: var(--accent); }
+
+      /* Sliders */
+      .full-rating { margin-top: 14px; }
+      .slider {
+        margin-bottom: 18px;
+        background: var(--surface-2);
+        padding: 10px 14px 14px;
+        border-radius: 10px;
+      }
+      .slider-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 14px;
+        margin-bottom: 8px;
+      }
+      .slider-label { color: var(--text); font-weight: 500; }
+      .slider-val {
+        font-family: 'IBM Plex Mono', monospace;
+        color: var(--accent);
+        font-size: 17px;
+        font-weight: 600;
+      }
+      .slider input[type=range] {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 100%;
+        height: 40px;
+        background: transparent;
+        cursor: pointer;
+        margin: 0;
+        padding: 0;
+      }
+      .slider input[type=range]::-webkit-slider-runnable-track {
+        height: 10px;
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+      }
+      .slider input[type=range]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 36px;
+        height: 36px;
+        background: var(--accent);
+        border-radius: 50%;
+        margin-top: -14px;
+        border: 3px solid var(--surface);
+        box-shadow: 0 2px 6px rgba(42,24,16,0.2);
+        cursor: pointer;
+      }
+      .slider input[type=range]::-moz-range-track {
+        height: 10px;
+        background: var(--surface);
+        border: 1px solid var(--border-strong);
+        border-radius: 5px;
+      }
+      .slider input[type=range]::-moz-range-thumb {
+        width: 30px;
+        height: 30px;
+        background: var(--accent);
+        border-radius: 50%;
+        border: 3px solid var(--surface);
+        box-shadow: 0 2px 6px rgba(42,24,16,0.2);
+        cursor: pointer;
+      }
+      .slider input[type=range]:focus { outline: none; }
+
+      .link-btn {
+        background: none;
+        border: none;
+        color: var(--accent);
+        font-size: 14px;
+        cursor: pointer;
+        padding: 12px 0 4px 0;
+        font-family: inherit;
+        -webkit-tap-highlight-color: rgba(184,84,31,0.15);
+      }
+
+      /* Reference bar */
+      .ref-bar { margin-bottom: 14px; }
+      .ref-bar:last-child { margin-bottom: 0; }
+      .ref-bar-header {
+        display: flex;
+        justify-content: space-between;
+        font-size: 13px;
+        margin-bottom: 4px;
+      }
+      .ref-bar-val.zone-green { color: var(--green); font-weight: 500; }
+      .ref-bar-val.zone-yellow { color: var(--yellow); font-weight: 500; }
+      .ref-bar-val.zone-red { color: var(--red); font-weight: 500; }
+      .ref-bar-val { font-family: 'IBM Plex Mono', monospace; }
+      .ref-bar-track {
+        position: relative;
+        height: 16px;
+        background: var(--surface-2);
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .ref-bar-track.empty { background: var(--surface-2); }
+      .ref-bar-track > div {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+      }
+      .zone-green { background: rgba(107, 142, 90, 0.5); }
+      .zone-yellow { background: rgba(201, 161, 74, 0.4); }
+      .marker {
+        width: 3px;
+        background: var(--text);
+        border-radius: 2px;
+        transform: translateX(-1.5px);
+        z-index: 2;
+      }
+      .marker.zone-green { background: var(--green); }
+      .marker.zone-yellow { background: var(--yellow); }
+      .marker.zone-red { background: var(--red); }
+      .ref-bar-labels {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10px;
+        color: var(--text-muted);
+        margin-top: 2px;
+        font-family: 'IBM Plex Mono', monospace;
+      }
+
+      /* Sticky actions */
+      .sticky-actions {
+        position: fixed;
+        bottom: 56px;
+        left: 0;
+        right: 0;
+        max-width: 540px;
+        margin: 0 auto;
+        padding: 12px 14px;
+        background: var(--bg);
+        border-top: 1px solid var(--border);
+        display: flex;
+        gap: 10px;
+        z-index: 4;
+      }
+      .btn-primary, .btn-secondary, .btn-danger {
+        flex: 1;
+        padding: 14px 16px;
+        border-radius: 10px;
+        font-size: 16px;
+        font-weight: 500;
+        font-family: inherit;
+        cursor: pointer;
+        border: 1px solid var(--accent);
+        min-height: 50px;
+        -webkit-tap-highlight-color: rgba(184,84,31,0.15);
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: white;
+      }
+      .btn-primary:active { background: #9C4519; transform: scale(0.98); }
+      .btn-secondary {
+        background: var(--surface);
+        color: var(--accent);
+        border: 1px solid var(--accent);
+      }
+      .btn-secondary:active { background: var(--accent-soft); }
+      .btn-danger {
+        background: var(--surface);
+        color: var(--red);
+        border: 1px solid var(--red);
+      }
+
+      /* Toast */
+      .toast {
+        position: fixed;
+        bottom: 150px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--text);
+        color: var(--bg);
+        padding: 10px 18px;
+        border-radius: 999px;
+        font-size: 14px;
+        z-index: 10;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      }
+
+      /* Bottom nav */
+      .bottom-nav {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        max-width: 540px;
+        margin: 0 auto;
+        background: var(--surface);
+        border-top: 1px solid var(--border);
+        display: flex;
+        z-index: 6;
+      }
+      .bottom-nav button {
+        flex: 1;
+        padding: 14px 8px;
+        background: none;
+        border: none;
+        font-size: 13px;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-family: inherit;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+      }
+      .bottom-nav button.active {
+        color: var(--accent);
+        position: relative;
+      }
+      .bottom-nav button.active::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 25%;
+        right: 25%;
+        height: 2px;
+        background: var(--accent);
+        border-radius: 0 0 2px 2px;
+      }
+
+      /* Empty state */
+      .empty-state {
+        padding: 48px 24px;
+        text-align: center;
+      }
+      .empty-state h2 {
+        font-family: 'Fraunces', serif;
+        font-weight: 500;
+        font-size: 22px;
+        margin: 0 0 8px;
+      }
+      .empty-state p {
+        color: var(--text-muted);
+        margin-bottom: 20px;
+      }
+      .empty-state .btn-primary { display: inline-block; flex: none; padding: 12px 24px; }
+
+      /* Modal */
+      .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(42, 24, 16, 0.4);
+        z-index: 100;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        animation: fadeIn 0.15s ease;
+      }
+      .modal {
+        background: var(--bg);
+        width: 100%;
+        max-width: 540px;
+        max-height: 90vh;
+        border-radius: 16px 16px 0 0;
+        overflow-y: auto;
+        animation: slideUp 0.2s ease;
+      }
+      @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      .modal-header {
+        padding: 16px 18px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        background: var(--bg);
+        z-index: 1;
+      }
+      .modal-header h3 {
+        margin: 0;
+        font-family: 'Fraunces', serif;
+        font-weight: 500;
+        font-size: 18px;
+      }
+      .close-btn {
+        background: none;
+        border: none;
+        font-size: 28px;
+        line-height: 1;
+        cursor: pointer;
+        color: var(--text-muted);
+        padding: 0 6px;
+      }
+      .modal-body { padding: 16px 18px; }
+      .modal-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 20px;
+      }
+
+      /* Suggestion */
+      .diagnosis {
+        background: var(--surface);
+        border-left: 3px solid var(--accent);
+        padding: 12px 14px;
+        border-radius: 4px;
+        margin-bottom: 12px;
+        font-size: 14px;
+        line-height: 1.55;
+      }
+      .bean-age-note {
+        font-size: 13px;
+        color: var(--text-muted);
+        font-style: italic;
+        margin-bottom: 12px;
+      }
+      .primary-suggestion {
+        background: var(--surface);
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        padding: 14px;
+        margin-bottom: 12px;
+      }
+      .suggestion-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--accent);
+        font-weight: 500;
+        margin-bottom: 6px;
+      }
+      .suggestion-text {
+        font-size: 15px;
+        margin-bottom: 10px;
+      }
+      .alternatives { margin-top: 10px; }
+      .alt-item {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 8px;
+      }
+
+      /* LLM section */
+      .suggestion-source {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--text-muted);
+        font-weight: 600;
+        margin-bottom: 10px;
+        padding-bottom: 4px;
+        border-bottom: 1px solid var(--border);
+      }
+      .llm-section {
+        margin-top: 24px;
+        padding-top: 4px;
+      }
+      .llm-section-hint {
+        font-size: 13px;
+        color: var(--text-muted);
+        margin-bottom: 12px;
+        line-height: 1.4;
+      }
+      .llm-trigger {
+        width: 100%;
+      }
+      .llm-loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 24px 12px;
+        font-size: 14px;
+        color: var(--text-muted);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+      .spinner {
+        width: 22px;
+        height: 22px;
+        border: 2px solid var(--accent-soft);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .llm-error {
+        padding: 12px 14px;
+        background: rgba(166,73,46,0.08);
+        border: 1px solid var(--red);
+        border-radius: 8px;
+        font-size: 13px;
+        color: var(--red);
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 320px;
+        overflow-y: auto;
+      }
+      .llm-reasoning {
+        font-size: 14px;
+        color: var(--text);
+        background: var(--surface);
+        border-left: 3px solid var(--text-muted);
+        padding: 10px 14px;
+        border-radius: 4px;
+        margin-bottom: 12px;
+        line-height: 1.55;
+      }
+      .llm-uncertainties {
+        background: var(--surface);
+        border: 1px dashed var(--border-strong);
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin-bottom: 12px;
+      }
+      .llm-uncertainties ul {
+        margin: 4px 0 0 0;
+        padding-left: 18px;
+        font-size: 13px;
+        color: var(--text);
+        line-height: 1.5;
+      }
+      .llm-uncertainties li {
+        margin-bottom: 4px;
+      }
+      .confidence-badge {
+        display: inline-block;
+        margin-left: 8px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.04em;
+        text-transform: lowercase;
+        vertical-align: middle;
+      }
+      .confidence-high {
+        background: rgba(107,142,90,0.18);
+        color: var(--green);
+        border: 1px solid var(--green);
+      }
+      .confidence-medium {
+        background: rgba(201,161,74,0.18);
+        color: #8C6F2B;
+        border: 1px solid var(--yellow);
+      }
+      .confidence-low {
+        background: rgba(166,73,46,0.10);
+        color: var(--red);
+        border: 1px solid var(--red);
+      }
+
+      /* Data Export/Import */
+      .data-io-card {
+        margin-top: 20px;
+        border: 1px dashed var(--border-strong);
+        background: transparent;
+      }
+      .data-io-hint {
+        font-size: 13px;
+        color: var(--text-muted);
+        line-height: 1.5;
+        margin-bottom: 12px;
+      }
+      .data-io-buttons {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .data-io-stats {
+        font-size: 12px;
+        color: var(--text-muted);
+        text-align: center;
+        padding-top: 4px;
+      }
+      textarea.mono {
+        font-family: 'IBM Plex Mono', monospace;
+        line-height: 1.5;
+        width: 100%;
+        padding: 10px;
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        background: var(--surface);
+        color: var(--text);
+        resize: vertical;
+      }
+
+      /* Log */
+      .brew-list { margin-top: 10px; }
+      .brew-row {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 8px;
+        box-shadow: var(--shadow);
+        display: flex;
+        align-items: stretch;
+        gap: 8px;
+      }
+      .brew-row-content {
+        flex: 1;
+        cursor: pointer;
+        min-width: 0;
+      }
+      .brew-row-content:active { opacity: 0.7; }
+      .brew-row-repeat {
+        flex: 0 0 auto;
+        width: 44px;
+        background: transparent;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--accent);
+        font-size: 22px;
+        font-family: inherit;
+        cursor: pointer;
+        padding: 0;
+        align-self: center;
+        height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .brew-row-repeat:active { background: rgba(199, 90, 44, 0.1); }
+      .brew-row-top {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 4px;
+        font-size: 14px;
+      }
+      .brew-bean { font-weight: 500; }
+      .brew-rating { color: var(--accent); letter-spacing: 1px; font-size: 13px; }
+      .brew-row-meta {
+        display: flex;
+        gap: 10px;
+        font-size: 12px;
+        color: var(--text-muted);
+        flex-wrap: wrap;
+      }
+      .brew-tag {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--accent);
+      }
+
+      /* Bean list */
+      .bean-row {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        margin-bottom: 8px;
+        box-shadow: var(--shadow);
+      }
+      .bean-row.expanded { border-color: var(--accent); }
+      .bean-row-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 14px;
+        cursor: pointer;
+      }
+      .bean-row-header:active { opacity: 0.7; }
+      .bean-row-main { flex: 1; min-width: 0; }
+      .bean-row-edit {
+        flex: 0 0 auto;
+        width: 36px;
+        height: 36px;
+        background: transparent;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text-muted);
+        font-size: 16px;
+        font-family: inherit;
+        cursor: pointer;
+        padding: 0;
+      }
+      .bean-row-edit:active { background: var(--surface-2); }
+      .bean-row-detail {
+        padding: 0 14px 14px;
+        border-top: 1px solid var(--border);
+        margin-top: 4px;
+        padding-top: 12px;
+      }
+      .best-shots-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+      .best-shot {
+        display: flex;
+        gap: 8px;
+        font-size: 12px;
+        padding: 6px 8px;
+        background: rgba(0,0,0,0.03);
+        border-radius: 6px;
+        flex-wrap: wrap;
+      }
+      .best-shot-rating { color: var(--accent); }
+      .bean-row-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 4px;
+      }
+      .bean-name { font-size: 15px; }
+      .bean-roaster { font-size: 13px; }
+      .bean-row-meta {
+        display: flex;
+        gap: 10px;
+        font-size: 12px;
+        color: var(--text-muted);
+        flex-wrap: wrap;
+      }
+
+      /* Detail */
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px 16px;
+        margin-bottom: 16px;
+      }
+      .detail-grid > div {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .detail-grid > div .muted {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .detail-section {
+        margin-bottom: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border);
+      }
+      .tag-inline {
+        display: inline-block;
+        padding: 3px 10px;
+        background: var(--surface-2);
+        border-radius: 999px;
+        font-size: 12px;
+        margin-right: 6px;
+      }
+    `}</style>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+  </script>
+
+  <!-- Service worker for installability -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW reg failed:', err));
+      });
+    }
+  </script>
+</body>
+</html>
